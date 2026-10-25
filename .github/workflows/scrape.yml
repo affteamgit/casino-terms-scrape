@@ -1,0 +1,81 @@
+name: Scrape casino terms
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit_per_source:
+        description: "Rows per source CSV (0 = all). Use ~10 for a pilot."
+        default: "0"
+      shards:
+        description: "Parallel jobs. Each job must finish in under 6 hours (about 1 row/min per worker)."
+        default: "20"
+      concurrency:
+        description: "Browser sessions per job. shards x concurrency must stay under the Browserless plan's concurrent-session limit."
+        default: "1"
+      only_ids:
+        description: "Optional: comma-separated job ids to (re)run, e.g. casinoguru-00017,lcb-00002"
+        default: ""
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.mk.outputs.shards }}
+    steps:
+      - id: mk
+        run: echo "shards=$(node -e 'console.log(JSON.stringify([...Array(Number(process.argv[1])).keys()]))' "${{ inputs.shards }}")" >> "$GITHUB_OUTPUT"
+
+  scrape:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node src/jobs.mjs --limit-per-source "${{ inputs.limit_per_source }}"
+      - name: Scrape shard ${{ matrix.shard }}
+        env:
+          BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
+          BROWSERLESS_REGION: ${{ vars.BROWSERLESS_REGION || 'production-sfo' }}
+          EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,br,nz' }}
+        run: |
+          IDS=""; [ -n "${{ inputs.only_ids }}" ] && IDS="--ids ${{ inputs.only_ids }}"
+          node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" $IDS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            out/results/shard-${{ matrix.shard }}.csv
+            out/text/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  merge:
+    needs: scrape
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: shards
+      - run: node src/merge.mjs shards
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: out/results.csv
+          retention-days: 90

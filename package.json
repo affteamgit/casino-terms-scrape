@@ -1,0 +1,15 @@
+{
+  "name": "casino-terms-scrape",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "jobs": "node src/jobs.mjs",
+    "scrape": "node src/scrape.mjs",
+    "merge": "node src/merge.mjs"
+  },
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "csv-stringify": "^6.5.2",
+    "playwright-core": "^1.56.0"
+  }
+}
