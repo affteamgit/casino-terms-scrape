@@ -29,6 +29,7 @@ Runs on GitHub Actions through Browserless, so nothing depends on anyone's PC.
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
 | `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |
+| `terms_found` | `yes` when a terms page was read; `no` usually means a reduced landing page (a `direct` exit from a country the casino restricts) or a lobby without footer links |
 | `pages` | which pages were read: footer, terms, payments, KYC/AML |
 | `licence_numbers`, `jurisdictions` | pattern-matched from the text |
 | `q_licence`, `q_owner`, `q_withdrawal_limits`, `q_withdrawal_time`, `q_installments`, `q_kyc`, `q_restricted` | raw quotes, one per line, each ending with ‹the page it came from› |

@@ -22,7 +22,7 @@ mkdirSync("out/text", { recursive: true });
 
 export const COLUMNS = [
   "id", "source", "casino", "review_url", "start_type", "start_url", "status", "final_url", "final_domain", "redirect_chain",
-  "exit_country", "ip", "ip_country", "countries_tried", "scraped_at", "pages", "licence_numbers", "jurisdictions",
+  "exit_country", "ip", "ip_country", "countries_tried", "scraped_at", "terms_found", "pages", "licence_numbers", "jurisdictions",
   "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error",
 ];
 
@@ -116,6 +116,18 @@ async function attempt(job, url, country) {
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
 
+    // Single-page lobbies render their footer late and load more as you scroll: scroll down and wait for the footer's
+    // links (or any terms link) before reading, up to ~15 s.
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+      await sleep(3000);
+      const ready = await page.evaluate(() => {
+        const links = [...document.querySelectorAll("a[href]")];
+        return links.some((a) => /terms|conditions|t&c/i.test(a.innerText + a.href)) || document.querySelectorAll("footer a[href], [class*=footer i] a[href]").length > 5;
+      }).catch(() => false);
+      if (ready) break;
+    }
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     const footer = await page.evaluate(() => {
       const f = document.querySelector("footer, [class*=footer i], #footer");
       const t = f ? f.innerText : "";
@@ -184,6 +196,8 @@ async function run(job) {
     const q = extract(r.docs);
     const fullText = r.docs.map((d) => d.text).join("\n");
     Object.assign(row, {
+      // "no" usually means a reduced landing page (direct exit from a country the casino restricts) or a lobby without footer links.
+      terms_found: r.docs.some((d) => d.label.startsWith("terms ") && d.text.length > 500) ? "yes" : "no",
       pages: r.docs.map((d) => d.label).join(" | "),
       licence_numbers: licenceNumbers(fullText).join(", "),
       jurisdictions: jurisdictions(q.licence, r.footer).join(", "),
