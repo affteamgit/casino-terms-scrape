@@ -9,7 +9,7 @@ Runs on GitHub Actions through Browserless, so nothing depends on anyone's PC.
 
 ## Running it
 
-1. Repository settings → Secrets → `BROWSERLESS_TOKEN` (your Browserless API key). Optional variables:
+1. Repository settings → Secrets → `BROWSERLESS_SECRET` (your Browserless API key). Optional variables:
    `BROWSERLESS_REGION` (default `production-sfo`), `EXIT_COUNTRIES` (default `ca,de,br,nz`).
 2. Actions → **Scrape casino terms** → Run workflow.
    - `limit_per_source`: rows per CSV, `0` for everything. A pilot is `10`.

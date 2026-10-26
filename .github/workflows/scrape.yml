@@ -43,7 +43,7 @@ jobs:
       - run: node src/jobs.mjs --limit-per-source "${{ inputs.limit_per_source }}"
       - name: Scrape shard ${{ matrix.shard }}
         env:
-          BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_TOKEN }}
+          BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_SECRET }}
           BROWSERLESS_REGION: ${{ vars.BROWSERLESS_REGION || 'production-sfo' }}
           EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,br,nz' }}
         run: |
