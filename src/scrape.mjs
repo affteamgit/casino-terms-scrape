@@ -55,9 +55,25 @@ function wsUrl(country) {
   return `wss://${REGION}.browserless.io?${p}`;
 }
 
+/**
+ * Opens a Browserless session. A 429 means the plan's concurrent-session limit is full (other shards hold the
+ * sessions), so wait and try again rather than fail the row.
+ */
+async function connect(country) {
+  let delay = 15000;
+  for (let i = 0; ; i++) {
+    try { return await chromium.connectOverCDP(wsUrl(country), { timeout: 45000 }); }
+    catch (e) {
+      if (!/429|Too Many Requests/.test(e.message) || i >= 5) throw e;
+      await sleep(delay + Math.random() * 5000);
+      delay = Math.min(delay * 2, 120000);
+    }
+  }
+}
+
 /** Follows a tracking link without a proxy and returns the casino URL it lands on, or "" when it stays on the tracker. */
 async function resolveDirect(url) {
-  const browser = await chromium.connectOverCDP(wsUrl("direct"), { timeout: 45000 });
+  const browser = await connect("direct");
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
@@ -93,7 +109,7 @@ async function whereAmI(context) {
 }
 
 async function attempt(job, url, country) {
-  const browser = await chromium.connectOverCDP(wsUrl(country), { timeout: 45000 });
+  const browser = await connect(country);
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();

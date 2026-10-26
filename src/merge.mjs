@@ -1,6 +1,6 @@
 // Merges out/results/shard-*.csv into out/results.csv (one row per input row, ordered by id) and prints a status summary.
 // Usage: node src/merge.mjs [resultsDir]
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
@@ -17,6 +17,7 @@ for (const f of readdirSync(dir, { recursive: true }).map(String).filter((f) => 
 const byId = new Map();
 for (const r of rows) byId.set(r.id, r);
 const merged = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+mkdirSync("out", { recursive: true });
 writeFileSync("out/results.csv", stringify(merged, { header: true, columns }));
 const tally = {};
 for (const r of merged) tally[r.status] = (tally[r.status] || 0) + 1;
