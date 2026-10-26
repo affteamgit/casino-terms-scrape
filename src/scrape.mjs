@@ -77,6 +77,7 @@ async function resolveDirect(url) {
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
+    await installBlocklist(page);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
     for (let i = 0; i < 4 && TRACKER_HOSTS.test(host(page.url())); i++) await sleep(2500);
     const finalUrl = page.url();
@@ -108,12 +109,25 @@ async function whereAmI(context) {
   } catch { return { ip: "", ip_country: "" }; } finally { await p.close().catch(() => {}); }
 }
 
+// Residential proxy traffic is what Browserless meters most (about 56 proxy units per row in the pilot), and most
+// of a casino page is images, video and trackers. None of it holds text, so it is never fetched.
+const BLOCKED_TYPES = new Set(["image", "media", "font", "imageset", "texttrack", "manifest"]);
+const BLOCKED_HOSTS = /google-analytics|googletagmanager|doubleclick|facebook\.net|facebook\.com\/tr|hotjar|clarity\.ms|intercom|livechatinc|zendesk|tawk\.to|sentry\.io|segment\.(io|com)|mixpanel|amplitude|optimizely|onesignal|pusher|youtube|vimeo|\.mp4(\?|$)|\.webm(\?|$)|\.gif(\?|$)/i;
+async function installBlocklist(page) {
+  await page.route("**/*", (route) => {
+    const req = route.request();
+    if (BLOCKED_TYPES.has(req.resourceType()) || BLOCKED_HOSTS.test(req.url())) return route.abort();
+    return route.continue();
+  }).catch(() => {});
+}
+
 async function attempt(job, url, country) {
   const browser = await connect(country);
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
     await page.setViewportSize({ width: 1366, height: 900 });
+    await installBlocklist(page);
     const chain = [];
     page.on("framenavigated", (f) => { if (f === page.mainFrame()) chain.push(f.url()); });
     let status = "ok", httpStatus = 0;
