@@ -77,5 +77,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: results
-          path: out/results.csv
+          path: |
+            out/results.csv
+            out/results-by-row.csv
           retention-days: 90
