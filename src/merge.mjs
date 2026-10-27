@@ -1,6 +1,6 @@
 // Merges out/results/shard-*.csv into out/results.csv (one row per input row, ordered by id) and prints a status summary.
 // Usage: node src/merge.mjs [resultsDir]
-import { readFileSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
@@ -21,4 +21,19 @@ mkdirSync("out", { recursive: true });
 writeFileSync("out/results.csv", stringify(merged, { header: true, columns }));
 const tally = {};
 for (const r of merged) tally[r.status] = (tally[r.status] || 0) + 1;
-console.log(`${merged.length} rows -> out/results.csv`, tally);
+console.log(`${merged.length} casinos -> out/results.csv`, tally);
+
+// One job covered every review-site row of that casino: expand the casino results back to one line per input row,
+// so each CasinoGuru / AskGamblers / LCB listing has its data, with its own review URL.
+if (existsSync("input/row-groups.csv") && existsSync("input/casinos.json")) {
+  const groups = parse(readFileSync("input/row-groups.csv"), { columns: true, skip_empty_lines: true });
+  const casinos = JSON.parse(readFileSync("input/casinos.json", "utf8"));
+  const resultByKey = new Map();
+  for (const c of casinos) { const r = byId.get(c.start_row); if (r) resultByKey.set(c.key, r); }
+  const perRow = groups.map((g) => {
+    const r = resultByKey.get(g.key) || { status: "not_run" };
+    return { row_id: g.id, source: g.source, casino: g.casino, review_url: g.review_url, listed_domain: g.domain, casino_key: g.key, ...Object.fromEntries(columns.filter((c) => !["id", "source", "casino", "review_url"].includes(c)).map((c) => [c, r[c] ?? ""])) };
+  });
+  writeFileSync("out/results-by-row.csv", stringify(perRow, { header: true }));
+  console.log(`${perRow.length} input rows -> out/results-by-row.csv`);
+}
