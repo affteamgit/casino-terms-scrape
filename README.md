@@ -10,7 +10,9 @@ Runs on GitHub Actions through Browserless, so nothing depends on anyone's PC.
 ## Running it
 
 1. Repository settings → Secrets → `BROWSERLESS_SECRET` (your Browserless API key). Optional variables:
-   `BROWSERLESS_REGION` (default `production-sfo`), `EXIT_COUNTRIES` (default `ca,de,br,nz`).
+   `BROWSERLESS_REGION` (default `production-sfo`), `EXIT_COUNTRIES` (default `ca,de,nz,fi,ie,br,jp,in`; a bare
+   403/451 from two countries in a row stops the rotation for that casino, since licensed-market brands refuse every
+   other country).
 2. Actions → **Scrape casino terms** → Run workflow.
    - `limit_per_source`: rows per CSV, `0` for everything. A pilot is `10`.
    - `shards`: parallel jobs. A job must finish inside 6 hours; budget about a minute per row per worker.

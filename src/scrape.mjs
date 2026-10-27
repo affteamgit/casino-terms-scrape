@@ -13,7 +13,7 @@ const CONCURRENCY = Number(arg("--concurrency", 2));
 const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",")) : null;
 const TOKEN = process.env.BROWSERLESS_TOKEN;
 const REGION = process.env.BROWSERLESS_REGION || "production-sfo";
-const COUNTRIES = (process.env.EXIT_COUNTRIES || "ca,de,br,nz").split(",");
+const COUNTRIES = (process.env.EXIT_COUNTRIES || "ca,de,nz,fi,ie,br,jp,in").split(",");
 if (!TOKEN) throw new Error("BROWSERLESS_TOKEN is not set");
 
 const OUT = `out/results/shard-${SHARD}.csv`;
@@ -195,10 +195,14 @@ async function run(job) {
   let resolved = "";
   outer: for (let u = 0; u < urls.length; u++) {
     const url = urls[u];
+    let walls = 0;
     for (const c of COUNTRIES) {
       tried.push(`${c}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
       if (r.status === "ok") break outer;
+      // A bare 403/451 from two countries in a row is a licensed-market brand refusing everyone outside its
+      // markets (Videoslots, BetVictor, Sky Casino in the pilot); the remaining countries would only cost sessions.
+      if (r.status === "blocked_http" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {
         // The proxy refuses the tracker's domain, or the redirect never fires through it: resolve the redirect without

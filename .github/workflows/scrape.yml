@@ -45,7 +45,7 @@ jobs:
         env:
           BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_SECRET }}
           BROWSERLESS_REGION: ${{ vars.BROWSERLESS_REGION || 'production-sfo' }}
-          EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,br,nz' }}
+          EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,nz,fi,ie,br,jp,in' }}
         run: |
           IDS=""; [ -n "${{ inputs.only_ids }}" ] && IDS="--ids ${{ inputs.only_ids }}"
           node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" $IDS
