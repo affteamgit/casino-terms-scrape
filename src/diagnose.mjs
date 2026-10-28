@@ -60,6 +60,23 @@ if (process.argv.includes("--probe-countries")) {
 }
 
 const { browser, page } = await open(COUNTRY);
+// --bytes: what goes through the proxy, by resource type and by host, so the blocklist can be aimed at it.
+const bytes = { byType: {}, byHost: {}, byExt: {}, total: 0, n: 0 };
+if (process.argv.includes("--bytes")) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.enable");
+  const meta = new Map();
+  cdp.on("Network.responseReceived", (e) => meta.set(e.requestId, { type: e.type, url: e.response.url, mime: e.response.mimeType }));
+  cdp.on("Network.loadingFinished", (e) => {
+    const m = meta.get(e.requestId); if (!m) return;
+    const n = e.encodedDataLength || 0, h = (() => { try { return new URL(m.url).hostname; } catch { return "?"; } })();
+    const ext = (m.url.match(/\.([a-z0-9]{2,5})(?:\?|$)/i) || [, m.mime])[1];
+    bytes.total += n; bytes.n++;
+    bytes.byType[m.type] = (bytes.byType[m.type] || 0) + n; bytes.byHost[h] = (bytes.byHost[h] || 0) + n; bytes.byExt[ext] = (bytes.byExt[ext] || 0) + n;
+  });
+}
+const top = (o, k = 12) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, k).map(([a, b]) => `${a} ${(b / 1048576).toFixed(2)}MB`).join(" | ");
+process.on("exit", () => { if (process.argv.includes("--bytes")) { console.log(`BYTES total ${(bytes.total / 1048576).toFixed(2)}MB in ${bytes.n} responses`); console.log("  by type:", top(bytes.byType)); console.log("  by ext/mime:", top(bytes.byExt)); console.log("  by host:", top(bytes.byHost)); } });
 if (process.argv.includes("--network")) {
   page.on("requestfailed", (r) => console.log(`  [failed] ${r.resourceType()} ${r.url().slice(0, 110)} ${r.failure()?.errorText || ""}`));
   page.on("response", (r) => { if (r.status() >= 400) console.log(`  [${r.status()}] ${r.request().resourceType()} ${r.url().slice(0, 110)}`); });

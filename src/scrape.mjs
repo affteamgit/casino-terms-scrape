@@ -25,7 +25,7 @@ mkdirSync("out/text", { recursive: true });
 export const COLUMNS = [
   "id", "source", "casino", "review_url", "start_type", "start_url", "status", "final_url", "final_domain", "redirect_chain",
   "exit_country", "ip", "ip_country", "countries_tried", "scraped_at", "terms_found", "pages", "licence_numbers", "jurisdictions",
-  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried",
+  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried", "mb",
 ];
 
 // Casinos already in this shard's CSV, or in a previous run's merged results.csv placed in out/, are not run again.
@@ -111,16 +111,26 @@ async function whereAmI(context) {
   } catch { return { ip: "", ip_country: "" }; } finally { await p.close().catch(() => {}); }
 }
 
-// Residential proxy traffic is what Browserless meters most (about 56 proxy units per row in the pilot), and most
-// of a casino page is images, video and trackers. None of it holds text, so it is never fetched.
-const BLOCKED_TYPES = new Set(["image", "media", "imageset", "texttrack"]);
-const BLOCKED_HOSTS = /google-analytics|googletagmanager|doubleclick|facebook\.net|facebook\.com\/tr|hotjar|clarity\.ms|intercom|livechatinc|zendesk|tawk\.to|sentry\.io|segment\.(io|com)|mixpanel|amplitude|optimizely|onesignal|pusher|youtube|vimeo|\.mp4(\?|$)|\.webm(\?|$)|\.gif(\?|$)/i;
+// Residential proxy traffic is what Browserless meters most (6 units per MB; browser time is 1 unit per 30 s), and
+// most of a casino page is images, video, fonts and trackers: none of it holds text, so it is never fetched. The
+// blocking is done with CDP URL patterns rather than Playwright's route interception, because interception turns
+// off Chromium's HTTP cache and every navigation in the terms search would then re-download the casino's JS bundle.
+const BLOCK_PATTERNS = [
+  "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.avif*", "*.svg*", "*.ico*", "*.mp4*", "*.webm*", "*.m3u8*", "*.mp3*", "*.ogg*",
+  "*.woff*", "*.ttf*", "*.otf*", "*/images/*", "*/img/*", "*/thumbnails/*", "*/thumbs/*", "*/videos/*",
+  "*google-analytics*", "*googletagmanager*", "*doubleclick*", "*facebook.net*", "*facebook.com/tr*", "*hotjar*", "*clarity.ms*", "*intercom*",
+  "*livechatinc*", "*zendesk*", "*tawk.to*", "*sentry.io*", "*segment.io*", "*segment.com*", "*mixpanel*", "*amplitude*", "*optimizely*",
+  "*onesignal*", "*pusher*", "*youtube*", "*vimeo*", "*comm100*", "*cookiebot*", "*posthog*", "*smartlook*", "*fullstory*", "*freshchat*", "*crisp.chat*",
+];
 async function installBlocklist(page) {
-  await page.route("**/*", (route) => {
-    const req = route.request();
-    if (BLOCKED_TYPES.has(req.resourceType()) || BLOCKED_HOSTS.test(req.url())) return route.abort();
-    return route.continue();
-  }).catch(() => {});
+  const meter = { bytes: 0 };
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setBlockedURLs", { urls: BLOCK_PATTERNS });
+    cdp.on("Network.loadingFinished", (e) => { meter.bytes += e.encodedDataLength || 0; });
+  } catch { /* an older Browserless build without the domain: run unblocked */ }
+  return meter;
 }
 
 // Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
@@ -269,13 +279,13 @@ async function fetchTerms(page, lobby) {
       if (guesses.length >= 3) break;
     }
   } catch { /* no sitemap */ }
-  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/user-agreement", "/info/terms-and-conditions", "/info/terms", "/policies/terms", "/help/terms-and-conditions", "/legal/terms-and-conditions", "/rules", "/tos"]) {
+  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/info/terms-and-conditions", "/user-agreement", "/rules"]) {
     guesses.push(`${origin}${lang}${p}`);
     if (lang) guesses.push(`${origin}${p}`);
   }
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
   const guessUntil = Date.now() + 120000; // the whole guessing phase gets two minutes
-  for (const href of [...new Set(guesses)].slice(0, 12)) {
+  for (const href of [...new Set(guesses)].slice(0, 6)) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
     const d = await readDoc(page, 8000, readsLikeTerms);
@@ -297,7 +307,7 @@ async function attempt(job, url, country) {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
     await page.setViewportSize({ width: 1366, height: 900 });
-    await installBlocklist(page);
+    const meter = await installBlocklist(page);
     const chain = [];
     page.on("framenavigated", (f) => { if (f === page.mainFrame()) chain.push(f.url()); });
     let status = "ok", httpStatus = 0;
@@ -339,7 +349,7 @@ async function attempt(job, url, country) {
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled };
+    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576 };
   } finally { await browser.close().catch(() => {}); }
 }
 
@@ -354,13 +364,14 @@ async function run(job) {
   const hasTerms = (x) => (x.docs || []).some((d) => d.label.startsWith("terms "));
   // A lobby reached without its terms (a bot wall on the terms page via this exit, Flamez) is kept only as a
   // fallback: another exit country may be served the terms, so the rotation goes on.
-  let fallback = null, noTerms = 0;
+  let fallback = null, noTerms = 0, mbTotal = 0;
   outer: for (let u = 0; u < urls.length; u++) {
     const url = urls[u];
     let walls = 0;
     for (const c of COUNTRIES) {
       tried.push(`${c}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+      mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
         fallback ??= { r, exit: tried[tried.length - 1] };
@@ -382,6 +393,7 @@ async function run(job) {
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
           try { r = await attempt(job, url, "direct"); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+          mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
         break; // another country won't help for this URL
@@ -393,7 +405,7 @@ async function run(job) {
   Object.assign(row, {
     status: r.status, final_url: r.finalUrl || "", final_domain: host(r.finalUrl || ""), redirect_chain: (r.chain || []).filter((u) => u !== "about:blank").join(" > ").slice(0, 2000),
     exit_country: r.status === "ok" ? exit.replace("(domain)", "") : "", ip: r.ip || "", ip_country: r.ip_country || "", countries_tried: tried.join(" "),
-    error: r.error || (r.httpStatus ? `http ${r.httpStatus}` : ""),
+    error: r.error || (r.httpStatus ? `http ${r.httpStatus}` : ""), mb: mbTotal.toFixed(1),
   });
   if (r.status === "ok") {
     const q = extract(r.docs);
@@ -420,7 +432,7 @@ async function worker() {
     const t0 = Date.now();
     const row = await run(job).catch((e) => ({ id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, status: "crash", error: clip(e.message, 200), scraped_at: new Date().toISOString() }));
     appendFileSync(OUT, stringify([COLUMNS.map((c) => row[c] ?? "")]));
-    console.log(`[${++n}/${jobs.length}] ${job.id} ${job.casino} -> ${row.status} ${row.final_domain || ""} ${row.exit_country || ""} ${Math.round((Date.now() - t0) / 1000)}s`);
+    console.log(`[${++n}/${jobs.length}] ${job.id} ${job.casino} -> ${row.status} ${row.final_domain || ""} ${row.exit_country || ""} ${Math.round((Date.now() - t0) / 1000)}s ${row.mb || 0}MB`);
   }
 }
 await Promise.all(Array.from({ length: CONCURRENCY }, worker));

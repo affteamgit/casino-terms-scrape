@@ -59,6 +59,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 | `scraped_at` | UTC timestamp |
 | `terms_found` | `yes` when a terms page was read; `no` means no terms link or clickable text on the lobby, or every candidate was thin, still loading or a bot wall |
 | `terms_tried` | the terms candidates that failed, with the reason, for rows with `terms_found = no` |
+| `mb` | megabytes moved through the proxy for this casino, across all its sessions (Browserless bills 6 units per residential MB) |
 | `pages` | which pages were read: footer, terms, payments, KYC/AML |
 | `licence_numbers`, `jurisdictions` | pattern-matched from the text |
 | `q_licence`, `q_owner`, `q_withdrawal_limits`, `q_withdrawal_time`, `q_installments`, `q_kyc`, `q_restricted` | raw quotes, one per line, each ending with ‹the page it came from› |
