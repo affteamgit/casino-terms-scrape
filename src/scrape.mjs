@@ -15,7 +15,11 @@ const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",")) : null;
 const DEADLINE = Number(arg("--deadline-minutes", 0)) > 0 ? Date.now() + Number(arg("--deadline-minutes")) * 60000 : Infinity; // no new casino is started after this
 const TOKEN = process.env.BROWSERLESS_TOKEN;
 const REGION = process.env.BROWSERLESS_REGION || "production-sfo";
-const COUNTRIES = (process.env.EXIT_COUNTRIES || "ca,de,nz,fi,ie,br,jp,in").split(",");
+// Exits are tried in phases: the datacenter proxy first (2 units per MB, and it tunnels to domains the residential
+// one refuses, such as bitstarz.com), then the residential proxy (6 units per MB) for casinos that block hosting IPs
+// (PlayGrand, Rokubet, BangaWin in the test set). Each phase lists its exit countries.
+const PROXY_PLAN = (process.env.PROXY_PLAN || `datacenter:ca,de;residential:${process.env.EXIT_COUNTRIES || "ca,de,nz,fi,ie,br,jp,in"}`)
+  .split(";").filter(Boolean).map((ph) => { const [type, list] = ph.split(":"); return { type: type.trim(), countries: list.split(",").map((c) => c.trim()).filter(Boolean) }; });
 if (!TOKEN) throw new Error("BROWSERLESS_TOKEN is not set");
 
 const OUT = `out/results/shard-${SHARD}.csv`;
@@ -47,13 +51,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
-function wsUrl(country) {
-  // A session may need the lobby, up to three terms candidates, a click, a dozen guessed paths and two more
+function wsUrl(country, type = "residential") {
+  // A session may need the lobby, up to three terms candidates, a click, a few guessed paths and two more
   // documents; ten minutes covers the slow single-page apps (PlayGrand, Rokubet) without leaving sessions hanging.
   const p = new URLSearchParams({ token: TOKEN, stealth: "true", timeout: "600000" });
   // "direct": no proxy, the session leaves from the Browserless region itself. Used only to resolve tracker redirects
-  // that the residential proxy refuses (casino.guru, lcb.org give ERR_TUNNEL_CONNECTION_FAILED through it).
-  if (country !== "direct") { p.set("proxy", "residential"); p.set("proxyCountry", country); p.set("proxySticky", "true"); }
+  // that the proxy refuses (casino.guru, lcb.org give ERR_TUNNEL_CONNECTION_FAILED through it).
+  if (country !== "direct") { p.set("proxy", type); p.set("proxyCountry", country); p.set("proxySticky", "true"); }
   return `wss://${REGION}.browserless.io?${p}`;
 }
 
@@ -61,10 +65,10 @@ function wsUrl(country) {
  * Opens a Browserless session. A 429 means the plan's concurrent-session limit is full (other shards hold the
  * sessions), so wait and try again rather than fail the row.
  */
-async function connect(country) {
+async function connect(country, type) {
   let delay = 15000;
   for (let i = 0; ; i++) {
-    try { return await chromium.connectOverCDP(wsUrl(country), { timeout: 45000 }); }
+    try { return await chromium.connectOverCDP(wsUrl(country, type), { timeout: 45000 }); }
     catch (e) {
       if (!/429|Too Many Requests/.test(e.message) || i >= 5) throw e;
       await sleep(delay + Math.random() * 5000);
@@ -301,8 +305,8 @@ async function fetchTerms(page, lobby) {
   return { href: "", text: "", via: "", tried };
 }
 
-async function attempt(job, url, country) {
-  const browser = await connect(country);
+async function attempt(job, url, country, type) {
+  const browser = await connect(country, type);
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
@@ -365,12 +369,16 @@ async function run(job) {
   // A lobby reached without its terms (a bot wall on the terms page via this exit, Flamez) is kept only as a
   // fallback: another exit country may be served the terms, so the rotation goes on.
   let fallback = null, noTerms = 0, mbTotal = 0;
-  outer: for (let u = 0; u < urls.length; u++) {
+  outer: for (const phase of PROXY_PLAN) for (let u = 0; u < urls.length; u++) {
     const url = urls[u];
+    // The datacenter phase is a cheap first try: a casino that blocked it through the resolved link gets the bare
+    // domain only in the residential phase.
+    if (phase.type === "datacenter" && u > 0 && url !== resolved) continue;
+    const tag = (c) => `${phase.type === "datacenter" ? "dc-" : ""}${c}`;
     let walls = 0;
-    for (const c of COUNTRIES) {
-      tried.push(`${c}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
-      try { r = await attempt(job, url, c); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+    for (const c of phase.countries) {
+      tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
+      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
       mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
@@ -392,7 +400,7 @@ async function run(job) {
           // The proxy refuses the casino's own domain (it does for some gambling sites). Last resort: no proxy, from
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
-          try { r = await attempt(job, url, "direct"); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
           mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }

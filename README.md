@@ -33,7 +33,9 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 1. Repository settings → Secrets → `BROWSERLESS_SECRET` (your Browserless API key). Optional variables:
    `BROWSERLESS_REGION` (default `production-sfo`), `EXIT_COUNTRIES` (default `ca,de,nz,fi,ie,br,jp,in`; every
    country is tried on a bare 403/451, since a casino that refuses Canada and Germany may serve New Zealand; only a
-   bot-check page from two countries stops the rotation).
+   bot-check page from two countries stops the rotation), `PROXY_PLAN` (default
+   `datacenter:ca,de;residential:<EXIT_COUNTRIES>`: the datacenter proxy first, at 2 units per MB, then the
+   residential proxy, at 6, for casinos that block hosting IPs).
 2. Actions → **Scrape casino terms** → Run workflow.
    - `limit_per_source`: casinos per source site, `0` for everything. A pilot is `10`.
    - `shards`: parallel jobs. A job must finish inside 6 hours; budget about a minute per casino per worker.
@@ -55,7 +57,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 | `start_type`, `start_url` | `tracking` link, or the casino `domain` when the link was N/A |
 | `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `load_error`, `connect_error`, `no_url` |
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
-| `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`direct` = Browserless's own egress), the IP the sites saw, everything tried |
+| `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`dc-` prefix = datacenter proxy, `direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |
 | `terms_found` | `yes` when a terms page was read; `no` means no terms link or clickable text on the lobby, or every candidate was thin, still loading or a bot wall |
 | `terms_tried` | the terms candidates that failed, with the reason, for rows with `terms_found = no` |
@@ -68,9 +70,10 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 
 ## How it reads a casino
 
-1. Open the tracking link through a residential proxy, Canada first, then the other `EXIT_COUNTRIES` if the casino
-   blocks it. The residential proxy refuses the tracker domains, so the redirect is resolved without a proxy first
-   and the destination is then opened through the proxy. Casinos the proxy also refuses get one direct attempt.
+1. Open the tracking link through the datacenter proxy, Canada then Germany, and if the casino blocks hosting IPs
+   through the residential proxy, Canada first, then the other `EXIT_COUNTRIES`. The proxies refuse the tracker
+   domains, so the redirect is resolved without a proxy first and the destination is then opened through the proxy.
+   Casinos the proxy also refuses get one direct attempt. `exit_country` carries a `dc-` prefix for a datacenter exit.
 2. Record the final URL, the redirect chain, and the IP and country reported by ipinfo.io for that session.
 3. Wait for the lobby to finish rendering (single-page apps draw the footer late), then read the footer.
 4. Open the terms. Casinos always have them, so the search escalates until something is found: every anchor is

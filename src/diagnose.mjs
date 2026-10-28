@@ -17,7 +17,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 const wsUrl = (country) => {
   const p = new URLSearchParams({ token: TOKEN, stealth: "true", timeout: "240000" });
-  if (country !== "direct") { p.set("proxy", "residential"); p.set("proxyCountry", country); p.set("proxySticky", "true"); }
+  if (country !== "direct") { p.set("proxy", process.env.PROXY_TYPE || "residential"); p.set("proxyCountry", country); p.set("proxySticky", "true"); }
   return `wss://${REGION}.browserless.io?${p}`;
 };
 const BLOCKED_TYPES = new Set(["image", "media", "font", "imageset", "texttrack", "manifest"]);

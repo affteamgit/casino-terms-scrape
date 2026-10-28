@@ -54,6 +54,7 @@ jobs:
           BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_SECRET }}
           BROWSERLESS_REGION: ${{ vars.BROWSERLESS_REGION || 'production-sfo' }}
           EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,nz,fi,ie,br,jp,in' }}
+          PROXY_PLAN: ${{ vars.PROXY_PLAN || '' }}
         run: |
           IDS=""; [ -n "${{ inputs.only_ids }}" ] && IDS="--ids ${{ inputs.only_ids }}"
           node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" --deadline-minutes 320 $IDS
