@@ -7,13 +7,16 @@ on:
         description: "Rows per source CSV (0 = all). Use ~10 for a pilot."
         default: "0"
       shards:
-        description: "Parallel jobs. Each job must finish in under 6 hours (about 1 row/min per worker)."
-        default: "20"
+        description: "Parallel jobs. A job stops starting casinos after 320 minutes; continue with previous_run_id."
+        default: "14"
       concurrency:
-        description: "Browser sessions per job. shards x concurrency must stay under the Browserless plan's concurrent-session limit."
-        default: "1"
+        description: "Browser sessions per job. shards x concurrency must stay under the Browserless plan's concurrent-session limit (Starter: 30)."
+        default: "2"
       only_ids:
         description: "Optional: comma-separated job ids to (re)run, e.g. casinoguru-00017,lcb-00002"
+        default: ""
+      previous_run_id:
+        description: "Optional: a previous run's id; casinos already in its results are skipped (continue a run that hit the 6-hour limit)"
         default: ""
 
 jobs:
@@ -41,6 +44,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node src/jobs.mjs --limit-per-source "${{ inputs.limit_per_source }}"
+      - name: Fetch the previous run's results to skip what it already did
+        if: inputs.previous_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ inputs.previous_run_id }}" -n results -D out/ && ls -la out/results.csv
       - name: Scrape shard ${{ matrix.shard }}
         env:
           BROWSERLESS_TOKEN: ${{ secrets.BROWSERLESS_SECRET }}
@@ -48,7 +56,7 @@ jobs:
           EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,nz,fi,ie,br,jp,in' }}
         run: |
           IDS=""; [ -n "${{ inputs.only_ids }}" ] && IDS="--ids ${{ inputs.only_ids }}"
-          node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" $IDS
+          node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" --deadline-minutes 320 $IDS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -73,6 +81,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: shards
+      - name: Carry forward the previous run's results
+        if: inputs.previous_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: mkdir -p shards/previous && gh run download "${{ inputs.previous_run_id }}" -n results -D shards/previous && mv shards/previous/results.csv shards/previous/shard-previous.csv
       - run: node src/merge.mjs shards
       - uses: actions/upload-artifact@v4
         with:
