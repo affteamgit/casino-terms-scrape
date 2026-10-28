@@ -180,10 +180,12 @@ const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).l
 // with only the navigation is stable long before the document itself arrives (NetBet's help pages).
 async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
   const t0 = Date.now();
-  let lastLen = -1;
+  let lastLen = -1, wallSince = 0;
   while (Date.now() - t0 < budget) {
     const t = await bodyText(page);
     const head = t.slice(0, 1500);
+    // A bot wall that has not cleared in 12 s will not: give up early, the caller moves on.
+    if (DOC_WALL.test(head)) { wallSince ||= Date.now(); if (Date.now() - wallSince > 12000) return { ok: false, text: t, note: "wall" }; } else wallSince = 0;
     if (t.length >= 500 && !DOC_WALL.test(head) && !DOC_LOADING.test(t.slice(0, 400)) && !placeholder(t) && want(t)) {
       if (t.length === lastLen) return { ok: true, text: t };
       lastLen = t.length;
@@ -220,6 +222,8 @@ async function fetchTerms(page, lobby) {
   const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
   for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
     for (const v of c.href.includes("?") ? [clean(c), c] : [c]) { const r = await tryLink(v); if (r) return r; }
+    // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
+    if (/\(wall\)$/.test(tried[tried.length - 1] || "")) return { href: "", text: "", via: "", tried, walled: true };
   }
   for (const c of lobby.clickables.slice(0, 2)) {
     try {
@@ -270,9 +274,12 @@ async function fetchTerms(page, lobby) {
     if (lang) guesses.push(`${origin}${p}`);
   }
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
+  const guessUntil = Date.now() + 120000; // the whole guessing phase gets two minutes
   for (const href of [...new Set(guesses)].slice(0, 12)) {
+    if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
     const d = await readDoc(page, 8000, readsLikeTerms);
+    if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
     // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
     const looksLikeTerms = d.ok && readsLikeTerms(d.text) && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300);
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
@@ -332,7 +339,7 @@ async function attempt(job, url, country) {
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried };
+    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled };
   } finally { await browser.close().catch(() => {}); }
 }
 
@@ -344,13 +351,22 @@ async function run(job) {
   const tried = [];
   let r = { status: "not_run" };
   let resolved = "";
+  const hasTerms = (x) => (x.docs || []).some((d) => d.label.startsWith("terms "));
+  // A lobby reached without its terms (a bot wall on the terms page via this exit, Flamez) is kept only as a
+  // fallback: another exit country may be served the terms, so the rotation goes on.
+  let fallback = null, noTerms = 0;
   outer: for (let u = 0; u < urls.length; u++) {
     const url = urls[u];
     let walls = 0;
     for (const c of COUNTRIES) {
       tried.push(`${c}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
-      if (r.status === "ok") break outer;
+      if (r.status === "ok") {
+        if (hasTerms(r)) break outer;
+        fallback ??= { r, exit: tried[tried.length - 1] };
+        if (++noTerms >= 3) break outer; // two more exits is enough to tell a wall from a walled exit
+        continue;
+      }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
       if (r.status === "challenge" && ++walls >= 2) break;
@@ -366,15 +382,17 @@ async function run(job) {
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
           try { r = await attempt(job, url, "direct"); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
-          if (r.status === "ok") break outer;
+          if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
         break; // another country won't help for this URL
       }
     }
   }
+  let exit = tried[tried.length - 1];
+  if (!(r.status === "ok" && hasTerms(r)) && fallback) ({ r, exit } = fallback);
   Object.assign(row, {
     status: r.status, final_url: r.finalUrl || "", final_domain: host(r.finalUrl || ""), redirect_chain: (r.chain || []).filter((u) => u !== "about:blank").join(" > ").slice(0, 2000),
-    exit_country: r.status === "ok" ? tried[tried.length - 1].replace("(domain)", "") : "", ip: r.ip || "", ip_country: r.ip_country || "", countries_tried: tried.join(" "),
+    exit_country: r.status === "ok" ? exit.replace("(domain)", "") : "", ip: r.ip || "", ip_country: r.ip_country || "", countries_tried: tried.join(" "),
     error: r.error || (r.httpStatus ? `http ${r.httpStatus}` : ""),
   });
   if (r.status === "ok") {

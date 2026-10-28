@@ -80,7 +80,9 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
    page that only asks for a country (unibet.com) is followed to the brand's regional site first. A document counts
    only once its text has stopped growing, is not a bot wall or a font placeholder, and reads like terms (a
    help-centre home page does not). The `pages` column says how the terms were reached
-   (`via click`, `via signup-page`, `via guess`, `via promo-terms`), and `terms_tried` what failed.
+   (`via click`, `via signup-page`, `via guess`, `via promo-terms`), and `terms_tried` what failed. A lobby reached
+   without its terms (a bot wall on the terms page through that exit) is kept only as a fallback while the other
+   exit countries are tried.
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.
 
