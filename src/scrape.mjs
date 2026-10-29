@@ -6,7 +6,7 @@ import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
 import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
-import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms } from "./terms.mjs";
+import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms, isParked } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -147,8 +147,10 @@ async function attempt(job, url, country, type) {
     else if (BLOCK_TEXT.test(text.slice(0, 5000))) status = "geo_blocked"; // the page says so
     else if (httpStatus === 403 || httpStatus === 451) status = "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
     else if (TRACKER_HOSTS.test(host(finalUrl))) status = "stuck_on_tracker";
+    else if (isParked(text)) status = "parked"; // a for-sale page, not a casino
     else if (httpStatus >= 400 || text.length < 200) status = "dead_or_empty";
     // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
+    if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
     const { ip, ip_country } = status === "ok" ? await whereAmI(context) : { ip: "", ip_country: "" };
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
@@ -213,6 +215,7 @@ async function run(job) {
       }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
+      if (r.status === "parked") break outer; // a for-sale page is the same from every exit
       if (r.status === "challenge" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {

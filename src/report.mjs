@@ -112,8 +112,8 @@ tr.detail td { background: var(--bg); padding: 16px 18px 20px; border-top: 1px d
 const DATA = JSON.parse(document.getElementById("data").textContent);
 const FIELDS = ${JSON.stringify(QUOTE_FIELDS)};
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const CLASS = { ok: "ok", geo_blocked: "warn", blocked_http: "bad", challenge: "bad", stuck_on_tracker: "warn", dead_or_empty: "bad", load_error: "bad", connect_error: "bad", no_url: "bad" };
-const LABEL = { ok: "ok", geo_blocked: "geo-blocked", blocked_http: "blocked (http)", challenge: "bot check", stuck_on_tracker: "stuck on tracker", dead_or_empty: "dead / empty", load_error: "load error", connect_error: "connect error", no_url: "no url" };
+const CLASS = { ok: "ok", geo_blocked: "warn", blocked_http: "bad", challenge: "bad", stuck_on_tracker: "warn", dead_or_empty: "bad", parked: "warn", load_error: "bad", connect_error: "bad", no_url: "bad" };
+const LABEL = { ok: "ok", geo_blocked: "geo-blocked", blocked_http: "blocked (http)", challenge: "bot check", stuck_on_tracker: "stuck on tracker", dead_or_empty: "dead / empty", parked: "parked", load_error: "load error", connect_error: "connect error", no_url: "no url" };
 
 const strip = document.getElementById("strip");
 const tally = (f) => DATA.reduce((a, r) => (a[f(r)] = (a[f(r)] || 0) + 1, a), {});

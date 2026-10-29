@@ -55,7 +55,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 |---|---|
 | `id`, `source`, `casino`, `review_url` | the casino (id = the input row its job started from; `source` lists every site it appears on, e.g. `casinoguru+lcb`) |
 | `start_type`, `start_url` | `tracking` link, or the casino `domain` when the link was N/A |
-| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `load_error`, `connect_error`, `no_url` |
+| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, not a casino), `load_error`, `connect_error`, `no_url` |
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
 | `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`dc-` prefix = datacenter proxy, `direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |

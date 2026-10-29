@@ -28,12 +28,31 @@ export async function settle(page, httpStatus = 0) {
   return bodyText(page);
 }
 
+// A cookie banner can cover the footer, and on some lobbies (bet25.dk) the consent text is all the page shows until it
+// is accepted. Only a button inside something that calls itself a cookie, consent or GDPR element is clicked.
+const CONSENT_TEXT = "^(accept( all| cookies| all cookies)?|agree|i agree|got it!?|ok(ay)?|allow( all)?( cookies)?|consent|continue|accepter|akzeptieren|alle akzeptieren|godkend( alle)?|hyväksy( kaikki)?|aceptar( todo)?|accetta( tutto)?|aceitar( todos)?|zgadzam się|accepteren|acceptera( alla)?|godta( alle)?)$";
+export async function dismissCookies(page) {
+  return page.evaluate((re) => {
+    const r = new RegExp(re, "i");
+    const inBanner = (el) => !!el.closest("[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i], [aria-label*=cookie i]");
+    const btn = [...document.querySelectorAll("button, a, [role=button]")].find((el) => inBanner(el) && r.test((el.innerText || "").trim().replace(/\s+/g, " ")));
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }, CONSENT_TEXT).catch(() => false);
+}
+
+// A parked or for-sale domain is not a casino: it gets its own status so it does not count as reached.
+export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy|sedo\.com|dan\.com|afternic|hugedomains|domain (has )?expired|make an offer/i;
+export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.slice(0, 3000));
+
 // Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
 // terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
 // anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
 // instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked.
 const CLICK_TEXT = "terms|conditions|t\\s*&\\s*c|\\btos\\b|user[-\\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\\bagb\\b|r[eè]gles|regulamin";
 export async function readLobby(page) {
+  if (await dismissCookies(page)) await sleep(1500);
   let last = -1, stable = 0;
   for (let i = 0; i < 10; i++) {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
