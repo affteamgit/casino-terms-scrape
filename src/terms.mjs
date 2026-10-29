@@ -88,27 +88,30 @@ export function notCasino(text, cands, pageUrl) {
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
-// Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
-// terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
-// anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
+// Single-page lobbies render their footer late, some only once it is scrolled into view (betportal.com: ~7 s after
+// load), and load more games as you scroll. The page is scrolled to the bottom every second until its anchors and text
+// stop growing (see below): 2 s of quiet once a terms link is present, 10 s otherwise, 25 s at most. Then collect the footer text,
+// every anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
 // instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked:
 // plain elements (betportal's <span>Vilkår</span>) and anchors with no real href (koalabet's router links: no href,
 // "", "#" or javascript:).
 const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
-export async function readLobby(page) {
+export const LOBBY_QUIET_MS = 10000, LOBBY_QUIET_TERMS_MS = 2000, LOBBY_MAX_MS = 25000;
+export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs = LOBBY_QUIET_TERMS_MS, maxMs = LOBBY_MAX_MS } = {}) {
   if (await dismissCookies(page)) await sleep(1500);
-  let last = -1, stable = 0;
-  for (let i = 0; i < 10; i++) {
+  const t0 = Date.now();
+  // A change is a new anchor count or 300 more characters than the page has shown so far: a ticker of recent wins
+  // changes the text all the time without growing it.
+  let anchors = -1, maxLen = 0, changed = Date.now();
+  while (Date.now() - t0 < maxMs) {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-    await sleep(3000);
+    await sleep(1000);
     const n = await page.evaluate(() => {
       const links = [...document.querySelectorAll("a[href]")];
-      return { a: links.length, t: links.some((a) => /terms|conditions|t&c/i.test(a.innerText + a.getAttribute("href"))) };
-    }).catch(() => ({ a: 0, t: false }));
-    if (n.t) break;
-    stable = n.a === last && n.a > 10 ? stable + 1 : 0;
-    if (stable >= 2 && i >= 3) break;
-    last = n.a;
+      return { a: links.length, len: document.body ? document.body.innerText.length : 0, t: links.some((a) => /terms|conditions/i.test(a.innerText + " " + a.getAttribute("href"))) };
+    }).catch(() => ({ a: 0, len: 0, t: false }));
+    if (n.a !== anchors || n.len >= maxLen + 300) { anchors = n.a; maxLen = Math.max(maxLen, n.len); changed = Date.now(); continue; }
+    if (Date.now() - changed >= (n.t ? quietTermsMs : quietMs)) break;
   }
   // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
   // links vanished from the DOM once the page was scrolled back to the top).

@@ -184,3 +184,20 @@ test("readLobby: href-less router anchors and plain elements that read like the 
     assert.equal(await page.evaluate(() => window.__go), "tos", "the selector reaches the element");
   } finally { await browser.close(); }
 });
+
+// betportal.com/no/: the footer, with its terms as a plain <span>Vilkår</span>, mounts seconds after the page is scrolled.
+const LATE = `<!doctype html><html><body><main style="height:3000px"><p>Spill nå.</p>${Array.from({ length: 12 }, (_, i) => `<a href="https://b.com/no/spill/${i}">Spill ${i}</a>`).join("")}</main>
+<script>let armed = false; addEventListener("scroll", () => { if (armed) return; armed = true; setTimeout(() => { const f = document.createElement("footer");
+f.innerHTML = '<span>Vilkår</span><span>Personvern</span><a href="https://b.com/no/om">Om oss</a><p>${"Lisensiert og regulert av Spillemyndigheten. ".repeat(40)}</p>'; document.body.appendChild(f); }, 2500); });</script></body></html>`;
+
+test("readLobby waits for a footer that mounts late after scrolling, and reads its plain-text terms (betportal)", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(LATE);
+    const lobby = await readLobby(page, { quietMs: 4000 });
+    assert.ok(lobby.clickables.some((c) => c.text === "Vilkår" && c.footer), JSON.stringify(lobby.clickables));
+    assert.match(lobby.footer, /Spillemyndigheten/);
+    assert.ok(lobby.links.some((l) => l.href === "https://b.com/no/om" && l.footer));
+  } finally { await browser.close(); }
+});
