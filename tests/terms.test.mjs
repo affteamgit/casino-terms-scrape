@@ -407,3 +407,9 @@ test("readLobby: promotion captions are not clickables, but terms whose name mer
     for (const t of ["T&Cs apply", "Bonus terms", "Free spins conditions"]) assert.ok(!texts.includes(t), t);
   } finally { await browser.close(); }
 });
+
+test("lobbyStatus: a file-host PDF of terms does not make a maintenance page a lobby", () => {
+  const text = "Site under maintenance. We'll be back soon. " + "Thank you for your patience while we upgrade. ".repeat(6);
+  const pdf = [{ href: "https://d1.cloudfront.net/terms.pdf", text: "Terms and Conditions", footer: true }];
+  assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: pdf }), "maintenance");
+});

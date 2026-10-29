@@ -19,7 +19,7 @@ const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenanc
  * What the first page says about reaching the casino. The checks run in this order: a domain marketplace's address,
  * a bot check (whatever the HTTP code: lumocasino answers 405 with "Human Verification"), a page that says the country
  * is blocked, a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page (`links`: the
- * page's anchors; a page with ten or more, or with its terms link, is not one), and last an
+ * page's anchors; a page with ten or more, or with a terms link on its own domain, is not one), and last an
  * error code or an empty page. Anything else is "ok".
  */
 export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] }) {
@@ -30,7 +30,7 @@ export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] })
   if (TRACKER_HOSTS.test(host(finalUrl))) return "stuck_on_tracker";
   if (isParked(text)) return "parked"; // a for-sale page, not a casino
   // Maintenance is a bare page: a lobby with a "live casino under maintenance" banner has its links and its terms.
-  if (text.length < 3000 && MAINTENANCE_TEXT.test(text) && links.length < 10 && !termsCandidates(links, finalUrl).some((c) => c.score >= 5)) return "maintenance";
+  if (text.length < 3000 && MAINTENANCE_TEXT.test(text) && links.length < 10 && !termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl))))) return "maintenance";
   if (httpStatus >= 400 || text.length < 200) return "dead_or_empty";
   return "ok";
 }
