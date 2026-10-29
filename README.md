@@ -34,14 +34,16 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 ### The whole set: local first, Browserless for the rest
 
 1. Run the local pass (see "Locally (the first pass)" below) and merge: `node src/merge.mjs` → `out/results.csv`.
-2. `node src/retry-ids.mjs` writes `input/retry-ids.txt`: every casino not reached, or reached without terms
+2. `node src/retry-ids.mjs out/results.csv` writes `input/retry-ids.txt`: every casino not reached, or reached without terms
    (`no_url` and `parked` rows have nothing to retry). Commit and push it.
 3. Add the `TYPESAFE_API_KEY` repository secret (Repository settings → Secrets) so Jev runs on Actions too; without
    it the `jev` column says `off`. Then Actions → **Scrape casino terms** → `only_ids` = `@input/retry-ids.txt`.
 4. Download the **results** artifact and merge the two: `mkdir -p out/final && cp out/results.csv
    out/final/shard-previous.csv && cp ~/Downloads/results.csv out/final/shard-0.csv && node src/merge.mjs out/final`.
-   Only the retried casinos come back from Actions, and a later row replaces the earlier one, so the local successes
-   stand.
+   Only the retried casinos come back from Actions. The merge keeps the better row per casino: terms read beats
+   reached without terms beats any failure, and between equals the later row (the Browserless one) wins. A retry that
+   reads the terms replaces the local miss; a retry that is blocked or times out never replaces a local result. The
+   merged file is `out/results.csv`.
 
 ### The Browserless run
 
@@ -137,6 +139,7 @@ is tried at `/en/` first, since the quote patterns read English.
 Resuming a local run reuses `out/results/shard-0.csv`, so that file must have been written by this version (its header
 now ends in `jev`). Move an older shard to `out/final/shard-previous.csv` or remove it before starting; to keep an
 older shard's rows, copy the new `out/results/shard-0.csv` to `out/final/shard-0.csv` after the run and merge with
-`node src/merge.mjs out/final` (the later row for a casino wins).
+`node src/merge.mjs out/final` (the better row for a casino is kept, the later one on a tie). Both merge routes, `node
+src/merge.mjs` and `node src/merge.mjs out/final`, write `out/results.csv`.
 
-When the pass is done, `node src/retry-ids.mjs` lists what to send to Browserless (see "The whole set" above).
+When the pass is done, `node src/retry-ids.mjs out/results.csv` lists what to send to Browserless (see "The whole set" above).

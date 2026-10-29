@@ -59,9 +59,16 @@ jobs:
           ONLY_IDS: ${{ inputs.only_ids }}
         run: |
           IDS="$ONLY_IDS"
-          case "$IDS" in @*) IDS=$(grep -v '^#' "${IDS#@}" | tr -s '\n' ',' | sed 's/,$//');; esac
-          [ -n "$IDS" ] && IDS="--ids $IDS"
-          node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" --deadline-minutes 320 $IDS
+          case "$IDS" in
+            @*)
+              FILE="${IDS#@}"
+              [ -f "$FILE" ] || { echo "only_ids: $FILE does not exist (commit and push it first)"; exit 1; }
+              IDS=$(tr -d '\r' < "$FILE" | grep -v '^#' | grep -v '^[[:space:]]*$' | tr -s '\n' ',' | sed 's/,$//' || true)
+              [ -n "$IDS" ] || { echo "only_ids: $FILE lists no ids, refusing to fall back to a full run"; exit 1; }
+              ;;
+          esac
+          ARGS=(); [ -n "$IDS" ] && ARGS=(--ids "$IDS")
+          node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" --deadline-minutes 320 "${ARGS[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
