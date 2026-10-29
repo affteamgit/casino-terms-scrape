@@ -152,6 +152,8 @@ export async function expandSections(page) {
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const tried = [];
+  // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
+  const lobbyText = (await bodyText(page).catch(() => "")) || "";
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
   // The page read validates every candidate, so a wrong pick costs one page load; no key or an error changes nothing.
@@ -277,27 +279,34 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const origin = new URL(lobby.url).origin;
   const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
   const guesses = [];
-  try {
-    await page.goto(`${origin}/sitemap.xml`, { waitUntil: "domcontentloaded", timeout: 20000 });
-    const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
-    for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
-      if (/terms|conditions|\btos\b|termos|\bagb\b|regulamin/i.test(m[1]) && !/privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game/i.test(m[1])) guesses.push(m[1]);
-      if (guesses.length >= 3) break;
-    }
-  } catch { /* no sitemap */ }
-  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/info/terms-and-conditions", "/user-agreement", "/rules"]) {
+  // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
+  const TERMS_URL = /terms|conditions|\btos\b|termos|\bagb\b|regulamin|user-?agreement|general-?rules/i, NOT_TERMS_URL = /privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game|blog|news/i;
+  const sitemap = async (u) => {
+    try {
+      await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
+      const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
+      return { index: /<sitemapindex/i.test(xml), locs: [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]) };
+    } catch { return { index: false, locs: [] }; }
+  };
+  let sm = await sitemap(`${origin}/sitemap.xml`);
+  if (!sm.locs.length) sm = await sitemap(`${origin}/sitemap_index.xml`);
+  const pools = [];
+  if (sm.index) { for (const child of sm.locs.filter((l) => !/product|game|slot|blog|news|image|video|post/i.test(l)).slice(0, 3)) pools.push((await sitemap(child)).locs); }
+  else pools.push(sm.locs);
+  for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) guesses.push(loc); if (guesses.length >= 4) break; }
+  // The paths casinos commonly use, with the lobby's language prefix and without it.
+  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/terms-of-use", "/terms-conditions", "/general-terms-and-conditions", "/info/terms-and-conditions", "/help/terms-and-conditions", "/legal/terms", "/legal/terms-and-conditions", "/pages/terms-and-conditions", "/page/terms-and-conditions", "/user-agreement", "/rules", "/tc"]) {
     guesses.push(`${origin}${lang}${p}`);
     if (lang) guesses.push(`${origin}${p}`);
   }
-  const lobbyText = (await bodyText(page).catch(() => "")) || "";
-  const guessUntil = Date.now() + 120000; // the whole guessing phase gets two minutes
-  for (const href of [...new Set(guesses)].slice(0, 6)) {
+  const guessUntil = Date.now() + 180000; // the whole guessing phase gets three minutes
+  for (const href of [...new Set(guesses)].slice(0, 12)) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
     const d = await readDoc(page, 8000, readsLikeTerms);
     if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
     // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
-    const looksLikeTerms = d.ok && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300) && (await isTermsPage(d.text, await pageMeta()));
+    const looksLikeTerms = d.ok && d.text.length > Math.min(lobbyText.length * 0.5, 8000) + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
     if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
   }
