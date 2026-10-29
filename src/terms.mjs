@@ -130,8 +130,19 @@ export function notCasino(text, cands, pageUrl) {
  * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
  * first 500 characters, for a lobby whose text grew a little since it was measured.
  */
-// How a promotion's terms open: a bonus, a campaign, wagering, free spins (with the Nordic words the exit sees).
+// The words of a promotion's terms: a bonus, a campaign, wagering, free spins (with the Nordic words the exit sees).
 export const PROMO_OPENING = /bonus|promotion|\bpromo\b|campaign|wager|free ?spins?|welcome (offer|package)|cashback|reload|tournament|kampanj|omsetningskrav|gratisspinn/i;
+/**
+ * May a document opened in place (a modal, a tab) be accepted on the terms pattern alone? Only when its heading (the
+ * short lines, 80 chars or less, among its first five) names the general terms and no promotion, and its first 300
+ * characters hold fewer than two distinct promotion words. Anything else (a "Cash Race" or "Spooky Friday" modal, a
+ * "Terms and Conditions" heading over a bonus's terms, no heading at all) is for Jev's page judgment only.
+ */
+export function fastInPlace(doc) {
+  const heading = doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).filter((l) => l.length <= 80).join(" ");
+  const promoWords = new Set((doc.slice(0, 300).match(new RegExp(PROMO_OPENING.source, "gi")) || []).map((w) => w.toLowerCase().replace(/\s+/g, " ")));
+  return TERMS_TEXT.test(heading) && !PROMO_OPENING.test(heading) && promoWords.size < 2;
+}
 /** The lines a click added to a page: what an in-place document (a modal, a tab) holds, without the page around it. */
 export function addedText(after, before) {
   const seen = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
@@ -492,10 +503,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Opened in place, the document is what the click added: the page around it (a lobby's "T&Cs" captions) is not
     // judged with it (betportal's promotion modal passed as terms on the lobby's words).
     const doc = navigated || d.hidden ? d.text : addedText(d.text, before);
-    // Opened in place, with a heading like a promotion's (of its first two lines, the short ones: betportal's "SPOOKY
-    // FRIDAY / 50 % FREDAGSBONUS"; a bonus modal is full of "terms and conditions"): only Jev may accept it.
-    const promoOpening = !navigated && PROMO_OPENING.test(doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).filter((l) => l.length <= 80).join(" "));
-    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast: !promoOpening })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
+    // Opened in place, the pattern may accept it only under a general-terms heading with no promotion in sight
+    // (fastInPlace); otherwise (betportal's "SPOOKY FRIDAY / 50 % FREDAGSBONUS" modal) only Jev may accept it.
+    const fast = navigated || fastInPlace(doc);
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
     tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : !unchanged && changed(d.text) ? "opened, not terms-like" : "nothing opened"})`);
     return { navigated, d };
   };
