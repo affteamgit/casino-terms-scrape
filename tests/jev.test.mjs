@@ -36,7 +36,7 @@ test("linkEntries: no footer found, so Jev sees the bottom of the page (koalabet
     L("Partner", "https://partner.example.com/x"), L("Docs", "https://docs.k.io/about.html"), L("Help", "https://cdn.files.example/help.pdf"), L("Game 69", "https://k.io/g/69")];
   const e = linkEntries({ url: "https://k.io/en", links, clickables: [] });
   assert.equal(e.length, MAX_ENTRIES);
-  assert.deepEqual(e.slice(0, 3).map((x) => x.text), ["Game 69", "Help", "Docs", "Game 68"].slice(0, 3), "bottom of the page first, one entry per href, a file host kept");
+  assert.deepEqual(e.slice(0, 3).map((x) => x.text), ["Game 69", "Help", "Docs"], "bottom of the page first, one entry per href, a file host kept");
   assert.ok(!e.some((x) => x.text === "Partner"), "another domain is left out");
   assert.ok(e.every((x) => x.in_footer === false && x.kind === "link"));
   assert.ok(!e.some((x) => x.href === "https://k.io/g/0"), "only the last anchors");
