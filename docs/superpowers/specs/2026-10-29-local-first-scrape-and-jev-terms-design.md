@@ -43,11 +43,9 @@ and the VPN guard, not a proxy setting.
   connect, `attempt()` included, is unchanged: the CDP blocklist and byte meter work on a local Chromium too.
   `LOCAL_HEADLESS` defaults to `true`; the pilot decides whether headed Chrome draws fewer challenge pages.
 - `resolveDirect()` (tracker redirects) runs through the same local browser when the plan has a local phase.
-- **VPN guard.** Before the first casino, the shard opens ipinfo.io through the local browser and refuses to start
-  unless `ip_country` equals the local phase's country (case-insensitive). During the run, every reached casino
-  already records `ip_country`; a value other than the expected country marks the row `vpn_down` and sets the
-  shard's deadline to now, so no further casino is scraped from the home IP. The run is resumed with the same
-  command once the VPN is back (done ids are skipped, as today).
+- **Exit check, for information only.** Before the first casino, the shard opens ipinfo.io through the local
+  browser and prints the IP and country it is leaving from. Every reached casino records `ip_country` as today, so
+  a VPN drop shows in the results; the run does not stop for it (the user is fine with the home IP being used).
 - Concurrency defaults to 6 for a local run (`--concurrency`). `CASINO_BUDGET` (20 min) and the per-session
   timeouts stay. `exit_country` records `local-no` style tags so local and Browserless rows are distinguishable.
 - Keys live in `.env` (gitignored): `BROWSERLESS_TOKEN`, `TYPESAFE_API_KEY`, `PROXY_PLAN=local:no`. Scripts are run
