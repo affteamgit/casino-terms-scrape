@@ -162,3 +162,25 @@ test("a div-only page wrapped in a consent-classed div is not a banner", async (
     assert.equal(lobby.links.find((l) => /terms-and-conditions/.test(l.href)).footer, true);
   } finally { await browser.close(); }
 });
+
+// koalabet.io: the legal links are <a> elements with no href, routed by a click handler.
+const ROUTER = `<!doctype html><html><body><main><p>${"Play slots and live games. ".repeat(20)}</p><a href="https://k.io/casino">Casino</a></main>
+<div class="bottom"><a onclick="window.__go='tos'">Terms of Service</a><a onclick="window.__go='sb'">Sportsbook Rules</a><a href="#" onclick="window.__go='bonus'">Bonus &amp; Promotional Terms</a>
+<a href="javascript:void(0)" onclick="window.__go='ua'">User Agreement</a><span onclick="window.__go='vilkar'">Vilkår</span><a href=""><span onclick="window.__go='gen'">General Conditions</span></a>
+<a href="https://k.io/terms-real">Terms and Conditions</a><p>${"A long paragraph that mentions the terms and conditions of play in passing, far too long to be a link. ".repeat(2)}</p></div></body></html>`;
+
+test("readLobby: href-less router anchors and plain elements that read like the terms are clickables (koalabet)", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(ROUTER);
+    const lobby = await readLobby(page);
+    const texts = lobby.clickables.map((c) => c.text);
+    for (const t of ["Terms of Service", "User Agreement", "Vilkår", "General Conditions"]) assert.ok(texts.includes(t), t);
+    assert.ok(!texts.includes("Terms and Conditions"), "a real link is a link, not a clickable");
+    assert.ok(!texts.some((t) => /Sportsbook|Bonus|passing/.test(t)), "rules, bonus terms and long text are not");
+    const tos = lobby.clickables.find((c) => c.text === "Terms of Service");
+    await page.evaluate((sel) => document.querySelector(sel).click(), tos.sel);
+    assert.equal(await page.evaluate(() => window.__go), "tos", "the selector reaches the element");
+  } finally { await browser.close(); }
+});

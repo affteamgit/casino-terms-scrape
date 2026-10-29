@@ -91,8 +91,10 @@ export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === re
 // Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
 // terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
 // anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
-// instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked.
-const CLICK_TEXT = "terms|conditions|t\\s*&\\s*c|\\btos\\b|user[-\\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\\bagb\\b|r[eè]gles|regulamin";
+// instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked:
+// plain elements (betportal's <span>Vilkår</span>) and anchors with no real href (koalabet's router links: no href,
+// "", "#" or javascript:).
+const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
 export async function readLobby(page) {
   if (await dismissCookies(page)) await sleep(1500);
   let last = -1, stable = 0;
@@ -117,16 +119,23 @@ export async function readLobby(page) {
     const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
     const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
     const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 80), footer: inFooter(a) }));
-    const clickables = [];
-    for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, li, span, div, p, button")) {
-      const text = (el.innerText || "").trim();
-      if (el.children.length || text.length > 40 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || el.closest("a[href]")) continue;
-      if (clickables.some((c) => c.text === text)) continue;
-      el.setAttribute("data-cts", String(clickables.length));
-      clickables.push({ text, footer: inFooter(el), sel: `[data-cts="${clickables.length}"]` });
-      if (clickables.length >= 6) break;
+    const found = [];
+    // An anchor whose href goes nowhere by itself: the app routes it from a click handler.
+    const router = (a) => { const h = (a.getAttribute("href") || "").trim(); return h === "" || h === "#" || /^javascript:/i.test(h); };
+    for (const el of document.querySelectorAll("[data-cts]")) el.removeAttribute("data-cts"); // marks from an earlier read
+    for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, a, li, span, div, p, button")) {
+      const text = (el.innerText || "").trim(), a = el.closest("a[href]");
+      if (el.children.length || text.length > 60 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || (a && !router(a))) continue;
+      if (found.some((c) => c.text === text)) continue;
+      found.push({ el, text, footer: inFooter(el) });
+      if (found.length >= 40) break;
     }
-    clickables.sort((a, b) => (b.footer ? 1 : 0) - (a.footer ? 1 : 0));
+    // The footer's first, in page order; then the rest from the bottom of the page up, so a promo card's "T&Cs apply"
+    // near the top does not crowd out the legal links at the bottom.
+    const clickables = [...found.filter((c) => c.footer), ...found.filter((c) => !c.footer).reverse()].slice(0, 6).map((c, i) => {
+      c.el.setAttribute("data-cts", String(i));
+      return { text: c.text, footer: c.footer, sel: `[data-cts="${i}"]` };
+    });
     return { url: location.href, footer, links, clickables };
   };
   const lobby = await page.evaluate(`(${read})(${JSON.stringify(CLICK_TEXT)}, ${inBannerInPage})`).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
