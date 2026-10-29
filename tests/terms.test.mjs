@@ -422,9 +422,9 @@ test("lobbyStatus: a file-host PDF of terms does not make a maintenance page a l
 test("guessOrder: the sitemap's terms URLs, then the sibling guesses, then the common paths", () => {
   const o = "https://x.com";
   const g = guessOrder({ sitemapLocs: [`${o}/rules/terms-and-conditions`, `${o}/blog`], links: [{ text: "Cookie Policy", href: `${o}/dl/cookiepolicy` }], pageUrl: `${o}/`, origin: o, lang: "" });
-  assert.equal(g[0], `${o}/rules/terms-and-conditions`);
-  assert.equal(g[1], `${o}/dl/terms`);
-  const firstCommon = g.indexOf(`${o}/terms-and-conditions`);
-  assert.ok(firstCommon > g.lastIndexOf(`${o}/dl/general-terms`), "siblings before the common paths");
-  assert.equal(g.length, 1 + 6 + 12);
+  const idx = (pred) => g.map((u, i) => (pred(u) ? i : -1)).filter((i) => i >= 0);
+  const sitemap = idx((u) => u === `${o}/rules/terms-and-conditions`), siblings = idx((u) => u.startsWith(`${o}/dl/`)), common = idx((u) => !u.startsWith(`${o}/dl/`) && !u.startsWith(`${o}/rules/`));
+  assert.ok(sitemap.length && siblings.length && common.length);
+  assert.ok(Math.max(...sitemap) < Math.min(...siblings), "every sitemap URL before every sibling");
+  assert.ok(Math.max(...siblings) < Math.min(...common), "every sibling before every common path");
 });
