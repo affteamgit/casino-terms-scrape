@@ -8,7 +8,8 @@ casino's own wording.
 A casino listed on two or three of the sites is visited once: the rows are grouped into casinos first (see
 "Duplicates" below), and the merge step writes the casino's result back onto every one of its input rows.
 
-Runs on GitHub Actions through Browserless, so nothing depends on anyone's PC.
+The full set is scraped locally first (installed Chrome through a VPN); the casinos that fail there are re-run on
+GitHub Actions through Browserless, and the two result sets are merged.
 
 ## Duplicates
 
@@ -30,6 +31,20 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 
 ## Running it
 
+### The whole set: local first, Browserless for the rest
+
+1. Run the local pass (see "Locally (the first pass)" below) and merge: `node src/merge.mjs` → `out/results.csv`.
+2. `node src/retry-ids.mjs` writes `input/retry-ids.txt`: every casino not reached, or reached without terms
+   (`no_url` and `parked` rows have nothing to retry). Commit and push it.
+3. Add the `TYPESAFE_API_KEY` repository secret (Repository settings → Secrets) so Jev runs on Actions too; without
+   it the `jev` column says `off`. Then Actions → **Scrape casino terms** → `only_ids` = `@input/retry-ids.txt`.
+4. Download the **results** artifact and merge the two: `mkdir -p out/final && cp out/results.csv
+   out/final/shard-previous.csv && cp ~/Downloads/results.csv out/final/shard-0.csv && node src/merge.mjs out/final`.
+   Only the retried casinos come back from Actions, and a later row replaces the earlier one, so the local successes
+   stand.
+
+### The Browserless run
+
 1. Repository settings → Secrets → `BROWSERLESS_SECRET` (your Browserless API key). Optional variables:
    `BROWSERLESS_REGION` (default `production-sfo`), `EXIT_COUNTRIES` (default `ca,de,nz,fi,ie,br,jp,in`; every
    country is tried on a bare 403/451, since a casino that refuses Canada and Germany may serve New Zealand; only a
@@ -40,7 +55,8 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
    - `limit_per_source`: casinos per source site, `0` for everything. A pilot is `10`.
    - `shards`: parallel jobs. A job must finish inside 6 hours; budget about a minute per casino per worker.
    - `concurrency`: browser sessions per job. `shards × concurrency` must stay under the Browserless plan's concurrent-session limit.
-   - `only_ids`: re-run specific casinos (ids from the results, e.g. `casinoguru-00017`).
+   - `only_ids`: re-run specific casinos (ids from the results, e.g. `casinoguru-00017,lcb-00002`), or
+     `@input/retry-ids.txt` for the ids in that file, one per line.
    - `previous_run_id`: continue a run. A job starts no new casino after 320 minutes (GitHub stops jobs at 6
      hours); dispatch again with the first run's id and the casinos it finished are skipped and carried into the
      new results.
@@ -62,6 +78,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 | `terms_found` | `yes` when a terms page was read; `no` means no terms link or clickable text on the lobby, or every candidate was thin, still loading or a bot wall |
 | `terms_tried` | the terms candidates that failed, with the reason, for rows with `terms_found = no` |
 | `mb` | megabytes moved through the proxy for this casino, across all its sessions (Browserless bills 6 units per residential MB) |
+| `jev` | what Jev (TypeSafe AI) answered: `link:<P there is a terms link>/<P of its pick>`, `page:<P this page is the terms>` per page it judged, `off` without a key, `error:…` when the call failed |
 | `pages` | which pages were read: footer, terms, payments, KYC/AML |
 | `licence_numbers`, `jurisdictions` | pattern-matched from the text |
 | `q_licence`, `q_owner`, `q_withdrawal_limits`, `q_withdrawal_time`, `q_installments`, `q_kyc`, `q_restricted` | raw quotes, one per line, each ending with ‹the page it came from› |
@@ -86,7 +103,10 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
    help-centre home page does not). The `pages` column says how the terms were reached
    (`via click`, `via signup-page`, `via guess`, `via promo-terms`), and `terms_tried` what failed. A lobby reached
    without its terms (a bot wall on the terms page through that exit) is kept only as a fallback while the other
-   exit countries are tried.
+   exit countries are tried. Jev is shown the footer's links and clickable texts and asked which is the general terms;
+   when it is confident one exists its pick is tried first (`via jev`). A page the terms pattern rejects is judged by
+   Jev before it is given up on. Terms hidden in collapsed sections are read from the DOM (`hidden text`), and PDFs
+   are read with pdf.js (`pdf`).
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.
 
@@ -113,3 +133,10 @@ the VPN decides the real exit, which the log prints at start). `LOCAL_HEADLESS=f
 `--ids id1,id2 --force` re-runs casinos that already have a result.
 The local Chrome asks for English (`--lang=en-US`, locale `en-US`), and a terms link under a language prefix (`/no/rules`)
 is tried at `/en/` first, since the quote patterns read English.
+
+Resuming a local run reuses `out/results/shard-0.csv`, so that file must have been written by this version (its header
+now ends in `jev`). Move an older shard to `out/final/shard-previous.csv` or remove it before starting; to keep an
+older shard's rows, copy the new `out/results/shard-0.csv` to `out/final/shard-0.csv` after the run and merge with
+`node src/merge.mjs out/final` (the later row for a casino wins).
+
+When the pass is done, `node src/retry-ids.mjs` lists what to send to Browserless (see "The whole set" above).

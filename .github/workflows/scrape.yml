@@ -13,7 +13,7 @@ on:
         description: "Browser sessions per job. shards x concurrency must stay under the Browserless plan's concurrent-session limit (Starter: 30)."
         default: "2"
       only_ids:
-        description: "Optional: comma-separated job ids to (re)run, e.g. casinoguru-00017,lcb-00002"
+        description: "Optional: comma-separated job ids to (re)run, or @input/retry-ids.txt for the ids in that file (one per line)"
         default: ""
       previous_run_id:
         description: "Optional: a previous run's id; casinos already in its results are skipped (continue a run that hit the 6-hour limit)"
@@ -55,8 +55,12 @@ jobs:
           BROWSERLESS_REGION: ${{ vars.BROWSERLESS_REGION || 'production-sfo' }}
           EXIT_COUNTRIES: ${{ vars.EXIT_COUNTRIES || 'ca,de,nz,fi,ie,br,jp,in' }}
           PROXY_PLAN: ${{ vars.PROXY_PLAN || '' }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          ONLY_IDS: ${{ inputs.only_ids }}
         run: |
-          IDS=""; [ -n "${{ inputs.only_ids }}" ] && IDS="--ids ${{ inputs.only_ids }}"
+          IDS="$ONLY_IDS"
+          case "$IDS" in @*) IDS=$(grep -v '^#' "${IDS#@}" | tr -s '\n' ',' | sed 's/,$//');; esac
+          [ -n "$IDS" ] && IDS="--ids $IDS"
           node src/scrape.mjs --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" --concurrency "${{ inputs.concurrency }}" --deadline-minutes 320 $IDS
       - uses: actions/upload-artifact@v4
         if: always()
