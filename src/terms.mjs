@@ -153,7 +153,11 @@ export async function fetchTerms(page, lobby) {
   const tryLink = async (c, lenient = false) => {
     if (isPdf(c.href)) return tryPdf(c, lenient);
     let resp;
-    try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
+    try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) {
+      // A PDF served without a .pdf extension makes Chromium start a download instead of rendering.
+      if (/Download is starting/i.test(e.message)) return tryPdf(c, lenient);
+      tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
+    }
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() }, lenient);
     let d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every

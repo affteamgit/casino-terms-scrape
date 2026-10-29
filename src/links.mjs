@@ -30,7 +30,7 @@ export function termsScore(l, pageUrl) {
   let s = (inPath ? 5 : 0) + (inText ? 3 : 0);
   if (PROMO.test(both)) s = Math.min(s - 6, 0); // a promotion's terms never rank as the general terms
   if (l.footer) s += 2;
-  if (!own || isPdf(l.href)) s -= 3; // a PDF, or a file host, is the terms only when no page on the casino's own domain is
+  if (!own) s -= 3; // a PDF on a file host is the terms only when nothing on the casino's own domain is
   if (text.length > 40) s -= 2; // promo cards, not a footer link
   if (/#./.test(p)) s -= 2; // an anchor inside another page
   s -= Math.max(0, p.split("/").filter(Boolean).length - 2); // deep paths are usually a specific policy

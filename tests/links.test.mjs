@@ -63,7 +63,7 @@ test("betico: a footer Terms link to a PDF on a file host qualifies; a regulator
 });
 
 test("an own-domain terms page still outranks an off-domain PDF", () => {
-  const links = [L("Terms", "https://cdn.example-casino.com/docs/terms.pdf", true), L("Terms and Conditions", "https://www.example-casino.com/terms", true)];
+  const links = [L("Terms", "https://d1abc.cloudfront.net/docs/terms.pdf", true), L("Terms and Conditions", "https://www.example-casino.com/terms", true)];
   assert.equal(termsCandidates(links, "https://www.example-casino.com/")[0].href, "https://www.example-casino.com/terms");
 });
 
@@ -71,4 +71,10 @@ test("isPdf", () => {
   assert.equal(isPdf("https://x.com/a/terms.pdf"), true);
   assert.equal(isPdf("https://x.com/a/terms.pdf?v=3"), true);
   assert.equal(isPdf("https://x.com/pdf/terms"), false);
+});
+
+test("an own-domain footer PDF keeps its full score", () => {
+  const c = termsCandidates([L("Terms and Conditions", "https://www.example-casino.com/docs/terms.pdf", true)], "https://www.example-casino.com/");
+  assert.equal(c.length, 1);
+  assert.equal(c[0].score, 10);
 });
