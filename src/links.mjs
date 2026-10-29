@@ -3,6 +3,9 @@
 // promotion's own terms, and those sit above the footer in the DOM.
 const TERMS_PATH = /terms|conditions|\btos\b|\bt-?and-?c|\bt&c|\bagb\b|termos|condi[cç]|r[eè]gles|regulamin|pravila|kurallar|szabály|\blegal\b|general-?rules|user-?agreement|\brules\b/i;
 export const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår/i;
+// A page whose own name is the general terms (the path's last segment) is a candidate whatever its caption says:
+// horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
+const STRONG_TERMS_PATH = /terms-?and-?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
 const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
@@ -22,13 +25,15 @@ const isHome = (u) => /^\/?(#.*)?$/.test(path(u)) || /^(index|home)\.\w+$/.test(
 /** Score for a link as the general terms page; null when it cannot be one. */
 export function termsScore(l, pageUrl) {
   if (!/^https?:/i.test(l.href) || isHome(l.href)) return null;
-  const text = (l.text || "").trim(), p = path(l.href), both = text + " " + p;
-  const inPath = TERMS_PATH.test(p), inText = TERMS_TEXT.test(text);
+  const text = (l.text || "").trim(), p = path(l.href), both = text + " " + p, name = p.split("/").filter(Boolean).pop() || "";
+  // The path's own name says terms: the caption neither adds points nor rejects it as privacy (a path-only hit).
+  const strong = STRONG_TERMS_PATH.test(name);
+  const inPath = TERMS_PATH.test(p), inText = !strong && TERMS_TEXT.test(text);
   const own = host(l.href).endsWith(registrable(host(pageUrl)));
   if (!own && !(l.footer && inText && (isPdf(l.href) || FILE_HOST.test(host(l.href))))) return null;
   if (!inPath && !inText) return null;
   // Judged on the link text and the page's own name: 777's User Agreement lives under /security-and-privacy/.
-  if (NOT_TERMS.test(text + " " + (p.split("/").filter(Boolean).pop() || ""))) return null;
+  if (NOT_TERMS.test(strong ? name : text + " " + name)) return null;
   let s = (inPath ? 5 : 0) + (inText ? 3 : 0);
   if (PROMO.test(both)) s = Math.min(s - 6, 0); // a promotion's terms never rank as the general terms
   if (l.footer) s += 2;

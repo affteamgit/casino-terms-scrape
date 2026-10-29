@@ -103,3 +103,18 @@ test("docLinks: a thin terms page's link to its document; privacy PDFs and other
   assert.deepEqual(docLinks([L("View", "https://clubscasino.com/profiles/me"), L("Open", "https://clubscasino.com/social-media-x"), L("Read", "https://clubscasino.com/wp-content/media/terms")], page).map((l) => l.href), ["https://clubscasino.com/wp-content/media/terms"], "document-path words are whole path segments");
   assert.equal(docLinks(Array.from({ length: 6 }, (_, i) => L("Download", `https://clubscasino.com/f${i}.pdf`)), page).length, 2, "two at most");
 });
+
+test("horseshoe: a link whose own path names the terms is a candidate whatever its caption says", () => {
+  const page = "https://www.horseshoeonlinecasino.com/";
+  const links = [L("Privacy Policy", "https://www.horseshoeonlinecasino.com/support/terms-and-conditions", true), L("Privacy Policy", "https://www.horseshoeonlinecasino.com/support/privacy-policy", true)];
+  const c = termsCandidates(links, page);
+  assert.deepEqual(c.map((l) => l.href), ["https://www.horseshoeonlinecasino.com/support/terms-and-conditions"]);
+  assert.equal(c[0].score, 5 + 2 - 0, "a path-only hit in the footer: the caption adds nothing");
+  // the caption still cannot make a privacy page the terms
+  assert.deepEqual(termsCandidates([L("Terms", "https://x.com/privacy-policy", true)], "https://x.com/"), []);
+  // a privacy page under a terms directory is still privacy (NetBet)
+  assert.deepEqual(termsCandidates([L("Privacy Policy", "https://x.com/help/terms-and-conditions/privacy", true)], "https://x.com/"), []);
+  // a strong word elsewhere in the path is not enough: the page's own name decides
+  assert.deepEqual(termsCandidates([L("Cookie Policy", "https://x.com/terms-of-use/cookies", true)], "https://x.com/"), []);
+  for (const p of ["terms-of-service", "terms-of-use", "termsandconditions", "user-agreement", "general-terms"]) assert.equal(termsCandidates([L("Privacy", `https://x.com/${p}`, true)], "https://x.com/").length, 1, p);
+});
