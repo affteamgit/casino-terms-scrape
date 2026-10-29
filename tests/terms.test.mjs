@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -310,4 +310,30 @@ test("sitemap picks are judged on the path, not the casino's name (dragonslots-1
   assert.deepEqual(sitemapTerms([`${o}/rules`, `${o}/rules/responsible-gaming`, `${o}/rules/terms-and-conditions`, `${o}/rules/bonus-terms`, `${o}/rules/privacy`]), [`${o}/rules/terms-and-conditions`]);
   assert.deepEqual(sitemapTerms(["https://gamesbet.com/terms", "https://sportcasino.io/en/terms-of-use"]), ["https://gamesbet.com/terms", "https://sportcasino.io/en/terms-of-use"]);
   assert.equal(sitemapTerms(Array.from({ length: 9 }, (_, i) => `https://x.com/${i}/terms`)).length, 4);
+});
+
+// A lobby whose terms caption opens a modal in place. `opening` is the modal's first line.
+const MODAL = (opening) => `<!doctype html><html><body><main><p>${"Play slots and live games every day. ".repeat(30)}</p>
+<div class="card"><a href="#" onclick="return false">T&amp;Cs apply</a></div></main>
+<footer><span id="v" onclick="document.body.insertAdjacentHTML('beforeend', document.getElementById('tpl').innerHTML)">Vilkår</span><p>${"Licensed and regulated. ".repeat(6)}</p></footer>
+<template id="tpl"><div class="modal"><h2>${opening}</h2>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${SECTION(i)}</p>`).join("")}</div></template></body></html>`;
+
+test("an in-place modal that opens like a promotion is not accepted on the pattern alone; the general terms are (betportal)", async () => {
+  const key = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY; // no Jev: only the pattern can accept
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(MODAL("Welcome Bonus: 150% up to 500 € + 200 free spins"));
+    let lobby = await readLobby(page, { quietMs: 2000 });
+    assert.deepEqual(lobby.clickables.map((c) => c.text), ["Vilkår"], "the promo caption 'T&Cs apply' is not a clickable");
+    const promo = await fetchTerms(page, lobby);
+    assert.equal(promo.text, "", "a bonus modal is not the terms");
+    assert.ok(promo.tried.some((t) => /click "Vilkår" \(opened, not terms-like\)/.test(t)), promo.tried.join(" | "));
+    await page.setContent(MODAL("General Terms and Conditions"));
+    lobby = await readLobby(page, { quietMs: 2000 });
+    const general = await fetchTerms(page, lobby);
+    assert.equal(general.via, "click", general.tried.join(" | "));
+    assert.match(general.text, /^General Terms and Conditions/);
+  } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
 });

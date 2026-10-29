@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT, PROMO } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -123,6 +123,8 @@ export function notCasino(text, cands, pageUrl) {
  * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
  * first 500 characters, for a lobby whose text grew a little since it was measured.
  */
+// How a promotion's terms open: a bonus, a campaign, wagering, free spins (with the Nordic words the exit sees).
+export const PROMO_OPENING = /bonus|promotion|\bpromo\b|campaign|wager|free ?spins?|welcome (offer|package)|cashback|reload|tournament|kampanj|omsetningskrav|gratisspinn/i;
 /** The lines a click added to a page: what an in-place document (a modal, a tab) holds, without the page around it. */
 export function addedText(after, before) {
   const seen = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
@@ -139,6 +141,9 @@ export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === re
 // plain elements (betportal's <span>Vilkår</span>) and anchors with no real href (koalabet's router links: no href,
 // "", "#" or javascript:).
 const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
+// A caption that is not the terms link: other policies, a product's rules, and a promotion's "T&Cs apply" or
+// "Bonus terms" (a promotion's modal is not the general terms).
+const CLICK_SKIP = `privacy|cookie|sport|rules|\\bapply\\b|${PROMO.source}`;
 export const LOBBY_QUIET_MS = 10000, LOBBY_QUIET_TERMS_MS = 2000, LOBBY_MAX_MS = 25000;
 export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs = LOBBY_QUIET_TERMS_MS, maxMs = LOBBY_MAX_MS } = {}) {
   if (await dismissCookies(page)) await sleep(1500);
@@ -158,8 +163,8 @@ export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs =
   }
   // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
   // links vanished from the DOM once the page was scrolled back to the top).
-  const read = (clickRe, inBannerFn) => {
-    const re = new RegExp(clickRe, "i"), memo = new Map(), inBanner = (el) => inBannerFn(el, memo);
+  const read = (clickRe, skipRe, inBannerFn) => {
+    const re = new RegExp(clickRe, "i"), skip = new RegExp(skipRe, "i"), memo = new Map(), inBanner = (el) => inBannerFn(el, memo);
     // A cookie banner's own "footer" is not the page's (bet25.dk's consent dialog has one and the page has none).
     const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer") && !inBanner(el);
     const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
@@ -171,7 +176,7 @@ export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs =
     for (const el of document.querySelectorAll("[data-cts]")) el.removeAttribute("data-cts"); // marks from an earlier read
     for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, a, li, span, div, p, button")) {
       const text = (el.innerText || "").trim(), a = el.closest("a[href]");
-      if (el.children.length || text.length > 60 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || (a && !router(a))) continue;
+      if (el.children.length || text.length > 60 || !re.test(text) || skip.test(text) || (a && !router(a))) continue;
       // The same text twice (a promo card's "VILKÅR" and the footer's): the footer's, else the one lower on the page.
       const dup = found.findIndex((c) => c.text.toLowerCase() === text.toLowerCase()), footer = inFooter(el);
       if (dup >= 0) { if (!found[dup].footer || footer) found[dup] = { el, text, footer }; continue; }
@@ -186,7 +191,7 @@ export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs =
     });
     return { url: location.href, footer, links, clickables };
   };
-  const lobby = await page.evaluate(`(${read})(${JSON.stringify(CLICK_TEXT)}, ${inBannerInPage})`).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
+  const lobby = await page.evaluate(`(${read})(${JSON.stringify(CLICK_TEXT)}, ${JSON.stringify(CLICK_SKIP)}, ${inBannerInPage})`).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
   return lobby;
 }
 
@@ -341,8 +346,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   dbg("jev", asked ? jev.notes[jev.notes.length - 1] : "not asked", "picks:", picks.map((p) => `${p.p.toFixed(2)} ${p.kind} "${p.text}" ${p.href}`).join(" | "));
   // Pages Jev has judged in this search, by URL: a candidate is judged once.
   const judged = new Map();
-  const isTermsPage = async (text, meta) => {
-    if (readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
+  // `fast: false` skips the pattern's fast accept, so only Jev can accept the text (and without Jev it is rejected).
+  const isTermsPage = async (text, meta, { fast = true } = {}) => {
+    if (fast && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
     if (jevDown || text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
     // Keyed on the text's length too: an in-place click leaves the URL at the lobby's, and each opens a different document.
     const jk = `${meta.url}|${text.length}`;
@@ -474,7 +480,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Opened in place, the document is what the click added: the page around it (a lobby's "T&Cs" captions) is not
     // judged with it (betportal's promotion modal passed as terms on the lobby's words).
     const doc = navigated || d.hidden ? d.text : addedText(d.text, before);
-    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta())) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
+    // Opened in place, with a heading like a promotion's (of its first two lines, the short ones: betportal's "SPOOKY
+    // FRIDAY / 50 % FREDAGSBONUS"; a bonus modal is full of "terms and conditions"): only Jev may accept it.
+    const promoOpening = !navigated && PROMO_OPENING.test(doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 2).filter((l) => l.length <= 80).join(" "));
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast: !promoOpening })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
     tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : !unchanged && changed(d.text) ? "opened, not terms-like" : "nothing opened"})`);
     return { navigated, d };
   };

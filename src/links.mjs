@@ -9,7 +9,7 @@ const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user
 // A product's own terms: the casino's general terms rank above them.
 const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
 const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
-const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
+export const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
 const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;
 // Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront). Other domains are never the terms:
