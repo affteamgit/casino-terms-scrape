@@ -271,3 +271,9 @@ test("lobbyStatus: a bot check is walled whatever the HTTP code (lumocasino 405 
   assert.equal(st("Redirecting", 200, "https://casino.guru/go/x"), "stuck_on_tracker");
   assert.equal(st("Welcome to Example Casino. " + "Play slots. ".repeat(50)), "ok");
 });
+
+test("notCasino: a review site that says how it rates casinos (masterplay.io)", () => {
+  assert.match(notCasino("Everything you need to know about how we review and rank casinos and slots.", [], "https://masterplay.io/en"), /how we review and rank casinos/);
+  assert.match(notCasino("What makes Masterplay different from other slot review sites?", [], "https://masterplay.io/en"), /slot review sites/);
+  assert.equal(notCasino("Welcome to Example Casino. Read our game reviews and rank up in the VIP club.", [], "https://example.com/"), "");
+});

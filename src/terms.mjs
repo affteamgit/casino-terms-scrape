@@ -108,7 +108,7 @@ export function marketplaceLobby(links) {
 
 // A review or affiliate site is not a casino either. The disclaimer has to be on the lobby itself, and a lobby that
 // links its own terms (a candidate of score 5 or more on the casino's domain) is a casino with an affiliate page.
-export const NOT_CASINO_TEXT = /independent review site|does not (run|operate) any casino|we may earn a commission|affiliate disclosure/i;
+export const NOT_CASINO_TEXT = /independent review site|does not (run|operate) any casino|we may earn a commission|affiliate disclosure|(casino|slots?) review sites?\b|how we (rate|review|rank|test)( and (rate|review|rank|test))? (online )?casinos/i;
 export function notCasino(text, cands, pageUrl) {
   const m = NOT_CASINO_TEXT.exec(text);
   if (!m) return "";
