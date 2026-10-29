@@ -557,9 +557,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
   const origin = new URL(lobby.url).origin;
   const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
-  // First the terms' likely siblings: the directory the lobby's privacy, cookie or responsible-gambling page lives in
-  // (virginbet.co.za links only /dl/cookiepolicy). One group, not counted against the twelve common paths.
-  const guesses = siblingGuesses(lobby.links, lobby.url);
+  // In order: the terms URLs the sitemap publishes; the terms' likely siblings, in the directory of the lobby's privacy,
+  // cookie or responsible-gambling page (virginbet.co.za links only /dl/cookiepolicy; one group, not counted against
+  // the twelve); then the twelve common paths.
+  const guesses = [];
   const guessUntil = Date.now() + 180000; // the whole guessing phase, sitemap included, gets three minutes
   // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
   const sitemap = async (u) => {
@@ -575,8 +576,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const pools = [];
   if (sm.index) { for (const child of sitemapChildren(sm.locs)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
-  guesses.push(...sitemapTerms(pools.flat()));
-  guesses.push(...guessUrls(origin, lang));
+  guesses.push(...sitemapTerms(pools.flat()), ...siblingGuesses(lobby.links, lobby.url), ...guessUrls(origin, lang));
   for (const href of [...new Set(guesses)]) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
