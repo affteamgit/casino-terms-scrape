@@ -3,6 +3,7 @@
 import { termsCandidates, registrable, isPdf } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
+import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -130,9 +131,45 @@ export async function expandSections(page) {
  * Returns the page's text and URL, and what was tried.
  */
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
-export async function fetchTerms(page, lobby) {
+export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const tried = [];
-  const cands = termsCandidates(lobby.links, lobby.url);
+  let cands = termsCandidates(lobby.links, lobby.url);
+  // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
+  // The page read validates every candidate, so a wrong pick costs one page load; no key or an error changes nothing.
+  // "off" is noted once however many questions went unasked.
+  const note = (s) => { if (s !== "off" || !jev.notes.includes("off")) jev.notes.push(s); };
+  const entries = linkEntries(lobby);
+  let picks = [];
+  if (entries.length) {
+    try {
+      const q = termsLinkQuestions(entries);
+      const answers = await askJev(q.state, q.questions);
+      picks = jevPicks(answers, entries);
+      note(linkSummary(answers));
+    } catch (e) { note(`error:${clip(e.message, 60)}`); }
+  }
+  const jevLinks = picks.filter((p) => p.kind === "link").map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true }));
+  cands = [...jevLinks, ...cands.filter((c) => !jevLinks.some((j) => j.href === c.href))];
+  const jevTexts = picks.filter((p) => p.kind === "text").map((p) => p.text);
+  lobby = { ...lobby, clickables: [...lobby.clickables.filter((c) => jevTexts.includes(c.text)), ...lobby.clickables.filter((c) => !jevTexts.includes(c.text))] };
+  dbg("jev", jev.notes[jev.notes.length - 1] || "off", "picks:", picks.map((p) => `${p.p.toFixed(2)} ${p.kind} "${p.text}" ${p.href}`).join(" | "));
+  // Pages Jev has judged in this search, by URL: a candidate is judged once.
+  const judged = new Map();
+  const isTermsPage = async (text, meta) => {
+    if (readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
+    if (text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
+    if (!judged.has(meta.url)) judged.set(meta.url, (async () => {
+      try {
+        const q = termsPageQuestion({ ...meta, text });
+        const answers = await askJev(q.state, q.questions);
+        note(pageSummary(answers));
+        dbg("jev page", meta.url, pageSummary(answers));
+        return acceptsPage(answers);
+      } catch (e) { note(`error:${clip(e.message, 60)}`); return false; }
+    })());
+    return judged.get(meta.url);
+  };
+  const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF is fetched as bytes and read in Node. page.request shares the session's cookies but not its proxy: it
   // leaves from this process (the VPN locally, the Actions runner on Browserless), which the file hosts allow.
@@ -143,7 +180,7 @@ export async function fetchTerms(page, lobby) {
       const body = await r.body();
       if (body.length > 20 * 1048576) throw new Error("over 20 MB");
       const text = await pdfText(body);
-      const good = text.length >= 500 && (lenient || readsLikeTerms(text));
+      const good = text.length >= 500 && (lenient || await isTermsPage(text, { url: c.href, title: "", headings: [] }));
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };
       tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
@@ -163,9 +200,9 @@ export async function fetchTerms(page, lobby) {
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
-    const good = d.ok && (lenient || readsLikeTerms(d.text));
+    const good = d.ok && (lenient || await isTermsPage(d.text, await pageMeta()));
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return { href: page.url(), text: d.text, via: "link", hidden: !!d.hidden, tried };
+    if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
     return null;
   };
@@ -190,7 +227,7 @@ export async function fetchTerms(page, lobby) {
       const d = await readDoc(page, 15000, readsLikeTerms);
       const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
       dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      if ((navigated ? d.ok : grew) && readsLikeTerms(d.text)) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
+      if ((navigated ? d.ok : grew) && await isTermsPage(d.text, await pageMeta())) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
       tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
     } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
   }
@@ -233,7 +270,7 @@ export async function fetchTerms(page, lobby) {
     const d = await readDoc(page, 8000, readsLikeTerms);
     if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
     // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
-    const looksLikeTerms = d.ok && readsLikeTerms(d.text) && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300);
+    const looksLikeTerms = d.ok && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
     if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
   }

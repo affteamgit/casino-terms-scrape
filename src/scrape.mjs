@@ -34,7 +34,7 @@ mkdirSync("out/text", { recursive: true });
 export const COLUMNS = [
   "id", "source", "casino", "review_url", "start_type", "start_url", "status", "final_url", "final_domain", "redirect_chain",
   "exit_country", "ip", "ip_country", "countries_tried", "scraped_at", "terms_found", "pages", "licence_numbers", "jurisdictions",
-  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried", "mb",
+  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried", "mb", "jev",
 ];
 
 // Casinos already in this shard's CSV, or in a previous run's merged results.csv placed in out/, are not run again.
@@ -167,7 +167,8 @@ async function attempt(job, url, country, type) {
       } catch { /* the first lobby stands */ }
     }
     const docs = [{ label: "footer", text: lobby.footer }];
-    const terms = await fetchTerms(page, lobby);
+    const jev = { notes: [] };
+    const terms = await fetchTerms(page, lobby, jev);
     if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.pdf ? " (pdf)" : ""}`, text: terms.text.slice(0, 250000) });
     for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
       try {
@@ -176,7 +177,7 @@ async function attempt(job, url, country, type) {
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576 };
+    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
   } finally { await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
@@ -238,6 +239,7 @@ async function run(job) {
     status: r.status, final_url: r.finalUrl || "", final_domain: host(r.finalUrl || ""), redirect_chain: (r.chain || []).filter((u) => u !== "about:blank").join(" > ").slice(0, 2000),
     exit_country: r.status === "ok" ? exit.replace("(domain)", "") : "", ip: r.ip || "", ip_country: r.ip_country || "", countries_tried: tried.join(" "),
     error: r.error || (r.httpStatus ? `http ${r.httpStatus}` : ""), mb: mbTotal.toFixed(1),
+    jev: r.jev || "",
   });
   if (r.status === "ok") {
     const q = extract(r.docs);
