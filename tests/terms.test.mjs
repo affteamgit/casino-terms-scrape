@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -412,4 +412,14 @@ test("lobbyStatus: a file-host PDF of terms does not make a maintenance page a l
   const text = "Site under maintenance. We'll be back soon. " + "Thank you for your patience while we upgrade. ".repeat(6);
   const pdf = [{ href: "https://d1.cloudfront.net/terms.pdf", text: "Terms and Conditions", footer: true }];
   assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: pdf }), "maintenance");
+});
+
+test("guessOrder: the sitemap's terms URLs, then the sibling guesses, then the common paths", () => {
+  const o = "https://x.com";
+  const g = guessOrder({ sitemapLocs: [`${o}/rules/terms-and-conditions`, `${o}/blog`], links: [{ text: "Cookie Policy", href: `${o}/dl/cookiepolicy` }], pageUrl: `${o}/`, origin: o, lang: "" });
+  assert.equal(g[0], `${o}/rules/terms-and-conditions`);
+  assert.equal(g[1], `${o}/dl/terms`);
+  const firstCommon = g.indexOf(`${o}/terms-and-conditions`);
+  assert.ok(firstCommon > g.lastIndexOf(`${o}/dl/general-terms`), "siblings before the common paths");
+  assert.equal(g.length, 1 + 6 + 12);
 });

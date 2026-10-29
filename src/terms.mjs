@@ -327,6 +327,10 @@ export const sitemapChildren = (locs) => locs.filter((l) => !/product|game|slot|
 /** Up to four sitemap locations whose path names the general terms. */
 export const sitemapTerms = (locs) => locs.filter((l) => TERMS_URL.test(urlPath(l)) && !NOT_TERMS_URL.test(urlPath(l))).slice(0, 4);
 
+/** The guess phase's URLs in order: the sitemap's terms URLs, the sibling guesses, then the common paths. */
+export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "" }) =>
+  [...sitemapTerms(sitemapLocs), ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
+
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 // `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
 // (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document.
@@ -597,7 +601,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const pools = [];
   if (sm.index) { for (const child of sitemapChildren(sm.locs)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
-  guesses.push(...sitemapTerms(pools.flat()), ...siblingGuesses(lobby.links, lobby.url), ...guessUrls(origin, lang));
+  guesses.push(...guessOrder({ sitemapLocs: pools.flat(), links: lobby.links, pageUrl: lobby.url, origin, lang }));
   for (const href of [...new Set(guesses)]) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
