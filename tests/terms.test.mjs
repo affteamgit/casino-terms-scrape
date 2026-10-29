@@ -367,3 +367,11 @@ test("a guessed path that serves the lobby shell is not the terms, even when its
     assert.ok(r.tried.some((t) => /sitemap\/guessed paths/.test(t)));
   } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
 });
+
+test("marketplaceLobby: a casino that links its own terms is not a listing, whatever else it links", () => {
+  const L = (text, href, footer = true) => ({ text, href, footer });
+  const listing = [L("Terms of Use", "https://dan.com/legal/terms-of-use"), L("Privacy", "https://dan.com/legal/privacy")];
+  assert.equal(marketplaceLobby(listing, "https://www.betfunk.com/"), "dan.com");
+  assert.equal(marketplaceLobby([...listing, L("Terms and Conditions", "https://www.betfunk.com/terms-and-conditions")], "https://www.betfunk.com/"), "", "its own terms link: a casino");
+  assert.equal(marketplaceLobby([...listing, L("Terms", "https://evilbetfunk.com/terms-and-conditions")], "https://www.betfunk.com/"), "dan.com", "a lookalike domain does not count");
+});

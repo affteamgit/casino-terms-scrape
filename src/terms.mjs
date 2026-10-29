@@ -96,8 +96,13 @@ export const isParkedUrl = (u) => { try { return PARKED_HOST.test(new URL(u).hos
 const MARKETPLACE_HOST = /(^|\.)(dan\.com|sedo\.com|godaddy\.com|afternic\.com|hugedomains\.com|undeveloped\.com|namecheap\.com|bodis\.com|parkingcrew\.net|sedoparking\.com)$/i;
 const marketplaceOf = (u) => { try { const m = MARKETPLACE_HOST.exec(new URL(u).hostname); return m ? m[2].toLowerCase() : ""; } catch { return ""; } };
 export const isMarketplaceUrl = (u) => !!marketplaceOf(u);
-/** The marketplace whose terms or privacy page the lobby links, or "": such a lobby is a for-sale listing. */
-export function marketplaceLobby(links) {
+/**
+ * The marketplace whose terms or privacy page the lobby links, or "": such a lobby is a for-sale listing. As with
+ * notCasino, a lobby that links its own terms (a candidate of score 5 or more on its domain) is a casino.
+ */
+export function marketplaceLobby(links, pageUrl = "") {
+  const own = registrable(host(pageUrl));
+  if (own && termsCandidates(links, pageUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), own))) return "";
   for (const l of links) {
     const m = marketplaceOf(l.href);
     if (!m) continue;

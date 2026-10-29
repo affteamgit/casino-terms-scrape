@@ -177,7 +177,7 @@ async function attempt(job, url, country, type) {
       } catch { /* the first lobby stands */ }
     }
     // A for-sale listing on the casino's own domain links the marketplace's legal pages (betfunk.com: Dan.com).
-    const market = marketplaceLobby(lobby.links);
+    const market = marketplaceLobby(lobby.links, lobby.url);
     if (market) return { ...base, status: "parked", error: `domain listing: ${market}` };
     // A review or affiliate site is not a casino: it gets the parked status, with the reason.
     const nc = notCasino(`${lobbyBody}\n${lobby.footer}`, termsCandidates(lobby.links, lobby.url), lobby.url);
