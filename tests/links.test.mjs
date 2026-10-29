@@ -138,6 +138,7 @@ test("namedTermsPage: an own-domain page whose own name is the general terms (be
   const page = "https://beef.casino/de/terms-use-site";
   assert.equal(namedTermsPage("https://beef.casino/de/terms-and-conditions", page), true);
   assert.equal(namedTermsPage("https://www.beef.casino/terms-of-service?x=1", page), true);
+  assert.equal(namedTermsPage("https://fugu.casino/de/terms-conditions", "https://fugu.casino/de/terms-use-site"), true, "fugu's slug");
   assert.equal(namedTermsPage("https://beef.casino/de/privacy-policy", page), false);
   assert.equal(namedTermsPage("https://beef.casino/de/bonus-terms-and-conditions", page), false, "a bonus's terms");
   assert.equal(namedTermsPage("https://other.com/terms-and-conditions", page), false);
