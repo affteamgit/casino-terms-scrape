@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT, PROMO } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -160,8 +160,9 @@ export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === re
 // "", "#" or javascript:).
 const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
 // A caption that is not the terms link: other policies, a product's rules, and a promotion's "T&Cs apply" or
-// "Bonus terms" (a promotion's modal is not the general terms).
-const CLICK_SKIP = `privacy|cookie|sport|rules|\\bapply\\b|${PROMO.source}`;
+// "Bonus terms" (a promotion's modal is not the general terms). Not the whole of PROMO: "refer", "registration",
+// "challenge" or "drops" also match inside a terms caption ("Registration terms").
+const CLICK_SKIP = "privacy|cookie|sport|rules|\\bapply\\b|bonus|promo|offer|welcome|campaign|tournament|free-?\\s?spin|vip\\b|cashback|reload|giveaway|loyalty|lottery";
 export const LOBBY_QUIET_MS = 10000, LOBBY_QUIET_TERMS_MS = 2000, LOBBY_MAX_MS = 25000;
 export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs = LOBBY_QUIET_TERMS_MS, maxMs = LOBBY_MAX_MS } = {}) {
   if (await dismissCookies(page)) await sleep(1500);

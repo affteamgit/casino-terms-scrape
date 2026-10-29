@@ -395,3 +395,15 @@ test("fastInPlace: an in-place document is fast-accepted only under a general-te
   assert.equal(fastInPlace(""), false, "no heading");
   assert.equal(fastInPlace(`${"These terms govern your account with the operator. ".repeat(3)}\n${"Deposits and withdrawals are processed daily. ".repeat(3)}`), false, "no short heading line");
 });
+
+test("readLobby: promotion captions are not clickables, but terms whose name merely contains such letters are", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><main><a href="#">T&amp;Cs apply</a><span>Bonus terms</span><span>Free spins conditions</span></main>
+<a href="https://x.com/terms">Terms</a><footer><span>Registration terms</span><span>Terms and conditions</span><p>${"Licensed and regulated. ".repeat(6)}</p></footer></body></html>`);
+    const texts = (await readLobby(page, { quietMs: 2000 })).clickables.map((c) => c.text);
+    assert.ok(texts.includes("Registration terms") && texts.includes("Terms and conditions"), texts.join(" | "));
+    for (const t of ["T&Cs apply", "Bonus terms", "Free spins conditions"]) assert.ok(!texts.includes(t), t);
+  } finally { await browser.close(); }
+});
