@@ -442,7 +442,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     // judged with it (betportal's promotion modal passed as terms on the lobby's words).
     const doc = navigated || d.hidden ? d.text : addedText(d.text, before);
     if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta())) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
-    tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
+    tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : !unchanged && changed(d.text) ? "opened, not terms-like" : "nothing opened"})`);
     return { navigated, d };
   };
   // A candidate page that is a hub of the casino's policies (tonplay.com's /policies/tonplay opens on its Dispute
