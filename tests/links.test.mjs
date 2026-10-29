@@ -156,3 +156,10 @@ test("the general terms outrank a product's terms and a bare /legal page, captio
   // the caption still counts for a strong slug
   assert.ok(termsCandidates([L("Terms and Conditions", "https://x.com/terms-and-conditions", true)], page)[0].score > termsCandidates([L("Privacy Policy", "https://x.com/terms-and-conditions", true)], page)[0].score);
 });
+
+test("namedTermsPage: a promotion's, product's or VIP directory's terms are not the general terms", () => {
+  const page = "https://x.com/de/terms-use-site";
+  for (const p of ["promotions/terms-and-conditions", "vip/terms-conditions", "sportsbook/terms-and-conditions", "poker/general-terms", "casino-games/terms-and-conditions", "bonus/de/terms-of-use", "racing/terms-of-service", "privacy/terms-and-conditions"])
+    assert.equal(namedTermsPage(`https://x.com/${p}`, page), false, p);
+  for (const p of ["en/info/terms-and-conditions", "legal/terms-of-service", "de/terms-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), true, p);
+});

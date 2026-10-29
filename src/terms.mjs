@@ -408,8 +408,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (r.text.length >= 5000) return r;
     }
     const at = page.url(), bare = (u) => u.replace(/[?#].*$/, "").replace(/\/$/, "");
-    const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80) }))).catch(() => []);
-    const full = links.find((l) => namedTermsPage(l.href, lobby.url) && bare(l.href) !== bare(at) && !visited.has(l.href));
+    const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80), footer: !!a.closest("footer, [class*=footer i], #footer") }))).catch(() => []);
+    // The best-scored such link, not the first in page order (a header's promotion link comes first).
+    const full = termsCandidates(links.filter((l) => namedTermsPage(l.href, lobby.url) && bare(l.href) !== bare(at) && !visited.has(l.href)), lobby.url).find((l) => l.score > 0);
     dbg("fuller", at, r.text.length, "chars", full ? full.href : "no fuller page");
     if (!full) return r;
     hopping = true;
