@@ -109,7 +109,7 @@ test("horseshoe: a link whose own path names the terms is a candidate whatever i
   const links = [L("Privacy Policy", "https://www.horseshoeonlinecasino.com/support/terms-and-conditions", true), L("Privacy Policy", "https://www.horseshoeonlinecasino.com/support/privacy-policy", true)];
   const c = termsCandidates(links, page);
   assert.deepEqual(c.map((l) => l.href), ["https://www.horseshoeonlinecasino.com/support/terms-and-conditions"]);
-  assert.equal(c[0].score, 5 + 2 - 0, "a path-only hit in the footer: the caption adds nothing");
+  assert.equal(c[0].score, 5 + 2 + 1, "a path hit in the footer, named as the terms: the caption adds nothing");
   // the caption still cannot make a privacy page the terms
   assert.deepEqual(termsCandidates([L("Terms", "https://x.com/privacy-policy", true)], "https://x.com/"), []);
   // a privacy page under a terms directory is still privacy (NetBet)
@@ -143,4 +143,16 @@ test("namedTermsPage: an own-domain page whose own name is the general terms (be
   assert.equal(namedTermsPage("https://beef.casino/de/bonus-terms-and-conditions", page), false, "a bonus's terms");
   assert.equal(namedTermsPage("https://other.com/terms-and-conditions", page), false);
   assert.equal(namedTermsPage("https://beef.casino/terms-and-conditions/privacy", page), false);
+});
+
+test("the general terms outrank a product's terms and a bare /legal page, captioned or not", () => {
+  const page = "https://x.com/";
+  const links = [L("Poker Terms", "https://x.com/poker/terms", true), L("Sportsbook Terms", "https://x.com/sportsbook/terms", true), L("Terms", "https://x.com/legal", true),
+    L("Terms and Conditions", "https://x.com/terms-and-conditions", true)];
+  const c = termsCandidates(links, page);
+  assert.equal(c[0].href, "https://x.com/terms-and-conditions");
+  assert.ok(c[0].score > c.find((l) => /legal/.test(l.href)).score);
+  assert.ok(c.find((l) => /poker/.test(l.href)).score < c.find((l) => /legal/.test(l.href)).score, "a product's terms rank below");
+  // the caption still counts for a strong slug
+  assert.ok(termsCandidates([L("Terms and Conditions", "https://x.com/terms-and-conditions", true)], page)[0].score > termsCandidates([L("Privacy Policy", "https://x.com/terms-and-conditions", true)], page)[0].score);
 });

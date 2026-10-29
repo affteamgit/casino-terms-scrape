@@ -6,6 +6,8 @@ export const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement
 // A page whose own name is the general terms (the path's last segment) is a candidate whatever its caption says:
 // horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
 const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
+// A product's own terms: the casino's general terms rank above them.
+const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
 const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
@@ -26,15 +28,17 @@ const isHome = (u) => /^\/?(#.*)?$/.test(path(u)) || /^(index|home)\.\w+$/.test(
 export function termsScore(l, pageUrl) {
   if (!/^https?:/i.test(l.href) || isHome(l.href)) return null;
   const text = (l.text || "").trim(), p = path(l.href), both = text + " " + p, name = p.split("/").filter(Boolean).pop() || "";
-  // The path's own name says terms: the caption neither adds points nor rejects it as privacy (a path-only hit).
+  // The path's own name says terms: the caption cannot reject it as privacy (horseshoe's "Privacy Policy" caption).
   const strong = STRONG_TERMS_PATH.test(name);
-  const inPath = TERMS_PATH.test(p), inText = !strong && TERMS_TEXT.test(text);
+  const inPath = TERMS_PATH.test(p), inText = TERMS_TEXT.test(text);
   const own = host(l.href).endsWith(registrable(host(pageUrl)));
   if (!own && !(l.footer && inText && (isPdf(l.href) || FILE_HOST.test(host(l.href))))) return null;
   if (!inPath && !inText) return null;
   // Judged on the link text and the page's own name: 777's User Agreement lives under /security-and-privacy/.
   if (NOT_TERMS.test(strong ? name : text + " " + name)) return null;
   let s = (inPath ? 5 : 0) + (inText ? 3 : 0);
+  if (strong) s += 1; // named as the general terms, ahead of a bare /legal or /rules page
+  if (PRODUCT.test(both)) s -= 3; // a product's terms (poker, sportsbook) rank below the general terms
   if (PROMO.test(both)) s = Math.min(s - 6, 0); // a promotion's terms never rank as the general terms
   if (l.footer) s += 2;
   if (!own) s -= 3; // a PDF on a file host is the terms only when nothing on the casino's own domain is
