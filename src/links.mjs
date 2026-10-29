@@ -98,3 +98,27 @@ export function docLinks(links, pageUrl) {
     return true;
   }).map((l, i) => ({ l, i, r: rank(l) })).sort((a, b) => b.r - a.r || a.i - b.i).map((x) => x.l).slice(0, 2);
 }
+
+/**
+ * Terms pages usually sit next to the other legal pages. A lobby with no terms link but a privacy, cookie or
+ * responsible-gambling link (virginbet.co.za: only "Cookie Policy" -> /dl/cookiepolicy) gets guesses in that link's
+ * directory: /dl/terms, /dl/terms-and-conditions, ... Own-domain links with two or more path segments; a bare language
+ * directory (/en/privacy) is left to the regular guesses. At most two directories, in page order.
+ */
+const LANG_DIR = /^\/(en|no|nb|nn|sv|da|fi|de|fr|es|it|pt|pl|ru|tr|nl|ja|hu|cs|el|ro|bg|hr|sl|sk|lt|lv|et|uk|ar|zh|ko|th|vi|id|hi|ka|kk)(-[a-z]{2})?$/i;
+export const SIBLING_NAMES = ["terms", "terms-and-conditions", "termsandconditions", "terms-of-use", "terms-of-service", "general-terms"];
+export function siblingGuesses(links, pageUrl) {
+  const home = registrable(host(pageUrl)), dirs = [];
+  for (const l of links) {
+    let u;
+    try { u = new URL(l.href); } catch { continue; }
+    if (!/^https?:$/.test(u.protocol) || !withinDomain(host(l.href), home)) continue;
+    const segs = u.pathname.split("/").filter(Boolean);
+    if (segs.length < 2 || !/privacy|cookie|responsible|safer|gdpr|data-?protection/i.test(`${l.text || ""} ${segs[segs.length - 1]}`)) continue;
+    const dir = `${u.origin}/${segs.slice(0, -1).join("/")}`;
+    if (LANG_DIR.test(new URL(dir).pathname) || dirs.includes(dir)) continue;
+    dirs.push(dir);
+    if (dirs.length >= 2) break;
+  }
+  return dirs.flatMap((d) => SIBLING_NAMES.map((n) => `${d}/${n}`));
+}

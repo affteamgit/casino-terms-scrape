@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, withinDomain, TERMS_TEXT } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -378,7 +378,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
   const origin = new URL(lobby.url).origin;
   const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
-  const guesses = [];
+  // First the terms' likely siblings: the directory the lobby's privacy, cookie or responsible-gambling page lives in
+  // (virginbet.co.za links only /dl/cookiepolicy). One group, not counted against the twelve common paths.
+  const guesses = siblingGuesses(lobby.links, lobby.url);
   const guessUntil = Date.now() + 180000; // the whole guessing phase, sitemap included, gets three minutes
   // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
   const TERMS_URL = /terms|conditions|\btos\b|termos|\bagb\b|regulamin|user-?agreement|general-?rules/i, NOT_TERMS_URL = /privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game|blog|news/i;
@@ -395,7 +397,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const pools = [];
   if (sm.index) { for (const child of sm.locs.filter((l) => !/product|game|slot|blog|news|image|video|post/i.test(l)).slice(0, 3)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
-  for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) guesses.push(loc); if (guesses.length >= 4) break; }
+  let fromSitemap = 0;
+  for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) { guesses.push(loc); fromSitemap++; } if (fromSitemap >= 4) break; }
   guesses.push(...guessUrls(origin, lang));
   for (const href of [...new Set(guesses)]) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }

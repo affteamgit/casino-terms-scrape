@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks } from "../src/links.mjs";
+import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -117,4 +117,19 @@ test("horseshoe: a link whose own path names the terms is a candidate whatever i
   // a strong word elsewhere in the path is not enough: the page's own name decides
   assert.deepEqual(termsCandidates([L("Cookie Policy", "https://x.com/terms-of-use/cookies", true)], "https://x.com/"), []);
   for (const p of ["terms-of-service", "terms-of-use", "termsandconditions", "user-agreement", "general-terms"]) assert.equal(termsCandidates([L("Privacy", `https://x.com/${p}`, true)], "https://x.com/").length, 1, p);
+});
+
+test("siblingGuesses: virginbet's only legal link is /dl/cookiepolicy, so the terms are guessed next to it", () => {
+  const page = "https://www.virginbet.co.za/";
+  const links = [L("Click here for our Cookie Policy", "https://www.virginbet.co.za/dl/cookiepolicy"), L("Slots", "https://www.virginbet.co.za/casino/slots"),
+    L("Privacy", "https://www.virginbet.co.za/dl/privacy?x=1"), L("Responsible Gambling", "https://www.virginbet.co.za/help/safer-gambling", true)];
+  assert.deepEqual(siblingGuesses(links, page), [
+    "https://www.virginbet.co.za/dl/terms", "https://www.virginbet.co.za/dl/terms-and-conditions", "https://www.virginbet.co.za/dl/termsandconditions",
+    "https://www.virginbet.co.za/dl/terms-of-use", "https://www.virginbet.co.za/dl/terms-of-service", "https://www.virginbet.co.za/dl/general-terms",
+    "https://www.virginbet.co.za/help/terms", "https://www.virginbet.co.za/help/terms-and-conditions", "https://www.virginbet.co.za/help/termsandconditions",
+    "https://www.virginbet.co.za/help/terms-of-use", "https://www.virginbet.co.za/help/terms-of-service", "https://www.virginbet.co.za/help/general-terms"]);
+  // one segment, a bare language directory (the regular guesses cover those), another domain, or a non-legal link: nothing
+  assert.deepEqual(siblingGuesses([L("Privacy Policy", "https://x.com/privacy-policy"), L("Privacy Policy", "https://x.com/en/privacy-policy"), L("Cookies", "https://other.com/legal/cookies"), L("Games", "https://x.com/casino/games")], "https://x.com/"), []);
+  // at most two directories
+  assert.equal(siblingGuesses([L("Privacy", "https://x.com/a/privacy"), L("Cookies", "https://x.com/b/cookies"), L("Responsible gaming", "https://x.com/c/rg")], "https://x.com/").length, 12);
 });
