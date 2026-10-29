@@ -169,3 +169,9 @@ test("a product named in the caption does not demote the general terms ('Casino 
   assert.equal(c[0].href, "https://x.com/terms-and-conditions");
   assert.ok(c[0].score > c[1].score);
 });
+
+test("namedTermsPage: directory words are read whole, so /preferences and /permission are not a promotion", () => {
+  const page = "https://x.com/";
+  for (const p of ["preferences/terms-and-conditions", "permission/terms-of-use", "help_center/terms-and-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), true, p);
+  for (const p of ["promotions/terms-and-conditions", "my_bonus/terms-of-use", "sports-rules/terms-and-conditions", "aml-policy/terms-and-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), false, p);
+});

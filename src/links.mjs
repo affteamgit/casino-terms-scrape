@@ -139,5 +139,12 @@ export function namedTermsPage(href, pageUrl) {
   try { u = new URL(href); } catch { return false; }
   const segs = u.pathname.split("/").filter(Boolean), name = segs[segs.length - 1] || "";
   return /^https?:$/.test(u.protocol) && withinDomain(host(href), registrable(host(pageUrl))) && STRONG_TERMS_PATH.test(name)
-    && !segs.some((g) => PROMO.test(g) || NOT_TERMS.test(g) || PRODUCT.test(g.replace(/-/g, " ")) || /casino-?games/i.test(g));
+    && !segs.some(namesOther);
+}
+// A path segment that names a promotion, a product, a VIP club or another policy, read as whole words (split on - and
+// _, each matched from its start): /promotions and /my_bonus do, /preferences ("refer") and /permission ("mission") do not.
+const PROMO_WORD = new RegExp(`^(?:${PROMO.source})`, "i"), NOT_TERMS_WORD = new RegExp(`^(?:${NOT_TERMS.source})`, "i");
+function namesOther(seg) {
+  const words = seg.split(/[-_.]+/).filter(Boolean);
+  return NOT_TERMS_WORD.test(seg) || PRODUCT.test(words.join(" ")) || /casino-?games/i.test(seg) || words.some((w) => PROMO_WORD.test(w) || NOT_TERMS_WORD.test(w));
 }
