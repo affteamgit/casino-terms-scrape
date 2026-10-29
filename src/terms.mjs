@@ -123,6 +123,11 @@ export function notCasino(text, cands, pageUrl) {
  * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
  * first 500 characters, for a lobby whose text grew a little since it was measured.
  */
+/** The lines a click added to a page: what an in-place document (a modal, a tab) holds, without the page around it. */
+export function addedText(after, before) {
+  const seen = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
+  return after.split("\n").filter((l) => !seen.has(l.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
@@ -167,8 +172,10 @@ export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs =
     for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, a, li, span, div, p, button")) {
       const text = (el.innerText || "").trim(), a = el.closest("a[href]");
       if (el.children.length || text.length > 60 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || (a && !router(a))) continue;
-      if (found.some((c) => c.text === text)) continue;
-      found.push({ el, text, footer: inFooter(el) });
+      // The same text twice (a promo card's "VILKÅR" and the footer's): the footer's, else the one lower on the page.
+      const dup = found.findIndex((c) => c.text.toLowerCase() === text.toLowerCase()), footer = inFooter(el);
+      if (dup >= 0) { if (!found[dup].footer || footer) found[dup] = { el, text, footer }; continue; }
+      found.push({ el, text, footer });
       if (found.length >= 40) break;
     }
     // The footer's first, in page order; then the rest from the bottom of the page up, so a promo card's "T&Cs apply"
@@ -410,16 +417,22 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     const lh = await page.evaluate(hiddenTextInPage).catch(() => "");
     const pageHidden = { len: lh.length, fp: fingerprint(lh) };
     const changed = (t) => hub ? fingerprint(t) !== fingerprint(before) && Math.abs(t.length - before.length) > before.length * 0.05 : t.length >= before.length + 2000;
+    // A navigation is a new page: another path. A new query or hash on the same page (betportal's ?terms=38 opens a
+    // promotion's terms over the lobby) is judged as opened in place.
+    const moved = () => { try { const a = new URL(page.url()), b = new URL(at); return a.origin !== b.origin || a.pathname.replace(/\/$/, "") !== b.pathname.replace(/\/$/, ""); } catch { return page.url() !== at; } };
     // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
     await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
-    for (let i = 0; i < 8 && page.url() === at && !changed(await bodyText(page)); i++) await sleep(1500);
+    for (let i = 0; i < 8 && !moved() && !changed(await bodyText(page)); i++) await sleep(1500);
     let d = await readDoc(page, 15000, readsLikeTerms);
-    const navigated = page.url() !== at;
+    const navigated = moved();
     if ((navigated || changed(d.text)) && !readsLikeTerms(d.text) && await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms);
     dbg("click", target.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
     // No navigation and the hidden text is the page's own: nothing opened, whatever it says about terms.
     const unchanged = !navigated && d.hidden && sameAsLobby(d.text, pageHidden);
-    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(d.text, await pageMeta())) return { r: { href: navigated ? page.url() : `${at}#"${target.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried } };
+    // Opened in place, the document is what the click added: the page around it (a lobby's "T&Cs" captions) is not
+    // judged with it (betportal's promotion modal passed as terms on the lobby's words).
+    const doc = navigated || d.hidden ? d.text : addedText(d.text, before);
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta())) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
     tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
     return { navigated, d };
   };

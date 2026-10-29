@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -276,4 +276,29 @@ test("notCasino: a review site that says how it rates casinos (masterplay.io)", 
   assert.match(notCasino("Everything you need to know about how we review and rank casinos and slots.", [], "https://masterplay.io/en"), /how we review and rank casinos/);
   assert.match(notCasino("What makes Masterplay different from other slot review sites?", [], "https://masterplay.io/en"), /slot review sites/);
   assert.equal(notCasino("Welcome to Example Casino. Read our game reviews and rank up in the VIP club.", [], "https://example.com/"), "");
+});
+
+test("addedText: what a click opened in place, without the lobby around it (betportal)", () => {
+  const lobby = "LOGG INN\nKampanjer\n1. INNSKUDDSBONUS\nVILKÅR\nBONUS PÅ 2. INNSKUDD\nVILKÅR\nVilkår\nPersonvern";
+  const after = lobby.replace("Kampanjer", "Kampanjer\nBonusvilkår\n\n\n\nDenne kampanjen er tilgjengelig for nye kunder.\nVILKÅR\nOmsetningskrav 35x");
+  assert.equal(addedText(after, lobby), "Bonusvilkår\n\nDenne kampanjen er tilgjengelig for nye kunder.\nOmsetningskrav 35x");
+  assert.equal(addedText(lobby, lobby), "");
+});
+
+test("readLobby: a text that is both a promo caption and the footer's link is the footer's (betportal)", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><main><div class="promo"><span id="p1">VILKÅR</span></div><div class="promo"><span id="p2">Vilkår</span></div>
+<a href="https://b.com/no/terms-and-conditions">Terms and Conditions</a></main><footer><span id="f">Vilkår</span><p>${"Lisensiert og regulert. ".repeat(10)}</p></footer></body></html>`);
+    const lobby = await readLobby(page);
+    const v = lobby.clickables.filter((c) => /vilkår/i.test(c.text));
+    assert.equal(v.length, 1);
+    assert.equal(v[0].footer, true);
+    assert.equal(await page.evaluate((sel) => document.querySelector(sel).id, v[0].sel), "f");
+    // without a footer, the one lowest on the page
+    await page.setContent(`<html><body><div><span id="p1">VILKÅR</span></div><a href="https://b.com/terms">Terms</a><div><span id="p2">Vilkår</span></div></body></html>`);
+    const l2 = await readLobby(page);
+    assert.equal(await page.evaluate((sel) => document.querySelector(sel).id, l2.clickables.find((c) => /vilkår/i.test(c.text)).sel), "p2");
+  } finally { await browser.close(); }
 });
