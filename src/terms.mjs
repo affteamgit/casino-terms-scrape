@@ -319,6 +319,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
   // Is this the lobby again? An app routes an unknown path (a guessed one, an invented /en/ variant) to its shell.
   const lobbyRef = { len: lobbyText.length, fp: fingerprint(lobbyText) };
+  // What the lobby hides (an SEO block, a collapsed footer): a guessed path that serves the lobby shell offers it as
+  // hidden text, and it may read like terms.
+  const lobbyHiddenText = (await page.evaluate(hiddenTextInPage).catch(() => "")) || "";
+  const lobbyHidden = { len: lobbyHiddenText.length, fp: fingerprint(lobbyHiddenText) };
   const isLobby = (text) => !!lobbyText && (sameAsLobby(text, lobbyRef) || text.slice(0, 300) === lobbyText.slice(0, 300));
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
@@ -582,8 +586,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
     const d = await readDoc(page, 8000, readsLikeTerms);
     if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
-    // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text again and passes the terms check.
-    const looksLikeTerms = d.ok && !isLobby(d.text) && (await isTermsPage(d.text, await pageMeta()));
+    // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text (or hidden text) again and passes
+    // the terms check.
+    const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && sameAsLobby(d.text, lobbyHidden)) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
     if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried });
     const hopped = await hopFrom(d, guessUntil);

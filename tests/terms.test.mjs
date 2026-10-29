@@ -347,3 +347,23 @@ test("lobbyStatus: maintenance only for a bare page, not a lobby with a 'under m
   assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: [...few, { href: "https://x.com/terms-and-conditions", text: "Terms and Conditions", footer: true }] }), "ok", "a lobby that links its terms");
   assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/" }), "maintenance", "no anchors given: the text decides");
 });
+
+// An app that serves its lobby shell on every path, with a collapsed block that reads like terms.
+// The block comes first in the DOM, so the hidden text does not start like the lobby's visible text.
+const SHELL = `<!doctype html><html><body><div style="display:none"><h2>About our terms</h2>${Array.from({ length: 10 }, (_, i) => `<p>${SECTION(i)}</p>`).join("")}</div>
+<main><p>${"Spin the reels and win big today. ".repeat(20)}</p></main></body></html>`;
+
+test("a guessed path that serves the lobby shell is not the terms, even when its hidden text reads like terms", async () => {
+  const key = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route("https://casino.test/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: SHELL }));
+    await page.goto("https://casino.test/");
+    const lobby = await readLobby(page, { quietMs: 2000 });
+    const r = await fetchTerms(page, lobby);
+    assert.equal(r.text, "", `accepted ${r.href}`);
+    assert.ok(r.tried.some((t) => /sitemap\/guessed paths/.test(t)));
+  } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
+});
