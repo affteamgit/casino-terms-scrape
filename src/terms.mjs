@@ -451,7 +451,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
     if (unblock && !unblocked && !c.english && !hopping && d.note !== "wall" && (c.jev || c.score >= 5)) {
       unblocked = true;
-      if (await unblock().catch(() => false)) { tried.push(`${c.href} again without the blocklist`); const r = await tryLink(c); if (r) return r; }
+      // The retry's own hop and hub steps run on its fresh read: its result stands, so they are not spent twice.
+      if (await unblock().catch(() => false)) { tried.push(`${c.href} again without the blocklist`); return tryLink(c); }
     }
     // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
     return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
