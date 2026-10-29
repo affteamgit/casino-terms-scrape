@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -240,4 +240,34 @@ test("readDoc reads the hidden text even when a live element keeps the visible t
     assert.equal(d.hidden, true);
     assert.ok(d.text.length > 3000);
   } finally { await browser.close(); }
+});
+
+test("marketplaceLobby: a lobby whose legal links belong to a domain marketplace is a for-sale listing (betfunk, scoobybet)", () => {
+  const L = (text, href) => ({ text, href });
+  assert.equal(marketplaceLobby([L("Buy now", "https://www.betfunk.com/buy"), L("Terms of Use", "https://dan.com/legal/terms-of-use"), L("Privacy", "https://dan.com/legal/privacy")]), "dan.com");
+  assert.equal(marketplaceLobby([L("Privacy policy", "https://www.godaddy.com/legal/agreements/privacy-policy")]), "godaddy.com");
+  assert.equal(marketplaceLobby([L("Terms", "https://www.namecheap.com/legal/marketplace/")]), "namecheap.com");
+  assert.equal(marketplaceLobby([L("Secured by GoDaddy", "https://seal.godaddy.com/verifySeal?x=1"), L("Terms", "https://casino.example/terms")]), "", "an SSL seal is not a legal link");
+  assert.equal(marketplaceLobby([L("Terms and Conditions", "https://casino.example/terms"), L("Sedo", "https://sedo.com/")]), "");
+  assert.equal(isMarketplaceUrl("https://dan.com/legal/terms-of-use"), true);
+  assert.equal(isMarketplaceUrl("https://www.godaddy.com/legal"), true);
+  assert.equal(isMarketplaceUrl("https://evildan.com/legal"), false);
+  assert.equal(isMarketplaceUrl("https://casino.example/terms"), false);
+});
+
+test("lobbyStatus: a bot check is walled whatever the HTTP code (lumocasino 405 'Human Verification'); a maintenance page is not reached (thestakehouse)", () => {
+  const st = (text, httpStatus = 200, finalUrl = "https://casino.example/") => lobbyStatus({ text, httpStatus, finalUrl });
+  assert.equal(st("Human Verification\nPlease complete the security check to continue.", 405), "challenge");
+  assert.equal(st("Just a moment...", 503), "challenge");
+  assert.equal(st("Not Found", 404), "dead_or_empty");
+  assert.equal(st("", 200), "dead_or_empty");
+  assert.equal(st("Hold Tight, Chico… We're Reloading the House. Back in a couple of hours. With more ways to pay: VISA, Mastercard. Check our socials."), "maintenance");
+  assert.equal(st("Site under maintenance. We'll be back soon."), "maintenance");
+  assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(100) + "Scheduled maintenance of the sportsbook on Monday."), "ok", "a full lobby that mentions maintenance");
+  assert.equal(st("Sorry, this site is not available in your country.", 200), "geo_blocked");
+  assert.equal(st("Forbidden", 403), "blocked_http");
+  assert.equal(st("The domain name x.com is for sale! Make an offer."), "parked");
+  assert.equal(st("x", 200, "https://forsale.godaddy.com/x"), "parked");
+  assert.equal(st("Redirecting", 200, "https://casino.guru/go/x"), "stuck_on_tracker");
+  assert.equal(st("Welcome to Example Casino. " + "Play slots. ".repeat(50)), "ok");
 });

@@ -9,7 +9,29 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 export const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
-export const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required/i;
+export const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required|human verification|performing security verification/i;
+export const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
+export const BLOCK_TEXT = /not (available|accessible) (in|from) your (country|region|location)|access (is )?(denied|restricted)|restricted (country|region|territor)|can(?:'|no)t access from this country|unavailable in your (country|region)|we do not accept players from|your country is (blocked|restricted)|403 forbidden|error 1020|sorry, you have been blocked/i;
+// A short page that says the site is down for maintenance (thestakehouse.io): the casino is not reached this time.
+const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenance|we(?:'|’)ll be back (soon|shortly)|back in a (few|couple of) (minutes|hours)/i;
+
+/**
+ * What the first page says about reaching the casino. The checks run in this order: a domain marketplace's address,
+ * a bot check (whatever the HTTP code: lumocasino answers 405 with "Human Verification"), a page that says the country
+ * is blocked, a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page, and last an
+ * error code or an empty page. Anything else is "ok".
+ */
+export function lobbyStatus({ text, httpStatus = 0, finalUrl = "" }) {
+  if (isParkedUrl(finalUrl)) return "parked"; // a domain marketplace answers for it, whatever it says
+  if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "challenge";
+  if (BLOCK_TEXT.test(text.slice(0, 5000))) return "geo_blocked"; // the page says so
+  if (httpStatus === 403 || httpStatus === 451) return "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
+  if (TRACKER_HOSTS.test(host(finalUrl))) return "stuck_on_tracker";
+  if (isParked(text)) return "parked"; // a for-sale page, not a casino
+  if (text.length < 3000 && MAINTENANCE_TEXT.test(text)) return "maintenance";
+  if (httpStatus >= 400 || text.length < 200) return "dead_or_empty";
+  return "ok";
+}
 
 export async function bodyText(page) {
   return page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
@@ -67,6 +89,22 @@ export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.sl
 // a domain marketplace or parking service is not a casino whatever it answers.
 const PARKED_HOST = /(^|\.)(sedo\.com|sedoparking\.com|dan\.com|afternic\.com|hugedomains\.com|parkingcrew\.net|bodis\.com|undeveloped\.com)$|^forsale\.|^parked\./i;
 export const isParkedUrl = (u) => { try { return PARKED_HOST.test(new URL(u).hostname); } catch { return false; } };
+// A for-sale lander served on the casino's own domain (betfunk.com, scoobybet.com: Dan.com listings) links the
+// marketplace's own terms and privacy pages. A marketplace's legal pages are never a casino's terms.
+const MARKETPLACE_HOST = /(^|\.)(dan\.com|sedo\.com|godaddy\.com|afternic\.com|hugedomains\.com|undeveloped\.com|namecheap\.com|bodis\.com|parkingcrew\.net|sedoparking\.com)$/i;
+const marketplaceOf = (u) => { try { const m = MARKETPLACE_HOST.exec(new URL(u).hostname); return m ? m[2].toLowerCase() : ""; } catch { return ""; } };
+export const isMarketplaceUrl = (u) => !!marketplaceOf(u);
+/** The marketplace whose terms or privacy page the lobby links, or "": such a lobby is a for-sale listing. */
+export function marketplaceLobby(links) {
+  for (const l of links) {
+    const m = marketplaceOf(l.href);
+    if (!m) continue;
+    let p = "";
+    try { p = new URL(l.href).pathname; } catch { /* not a URL */ }
+    if (TERMS_TEXT.test(l.text || "") || /privacy|legal|terms/i.test(`${l.text || ""} ${p}`)) return m;
+  }
+  return "";
+}
 
 // A review or affiliate site is not a casino either. The disclaimer has to be on the lobby itself, and a lobby that
 // links its own terms (a candidate of score 5 or more on the casino's domain) is a casino with an affiliate page.
@@ -278,7 +316,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     } catch (e) { failed(e); asked = true; }
   }
   if (!entries.length && !jevEnabled()) note("off"); // nothing to ask about, and no key either
-  const jevLinks = picks.filter((p) => p.kind === "link").map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true }));
+  const jevLinks = picks.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true }));
   cands = [...jevLinks, ...cands.filter((c) => !jevLinks.some((j) => j.href === c.href))];
   const jevTexts = picks.filter((p) => p.kind === "text").map((p) => p.text);
   lobby = { ...lobby, clickables: [...lobby.clickables.filter((c) => jevTexts.includes(c.text)), ...lobby.clickables.filter((c) => !jevTexts.includes(c.text))] };
