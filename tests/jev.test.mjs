@@ -66,6 +66,18 @@ test("jevPicks: confident answers give up to two picks, best first; a low Noul o
   assert.deepEqual(jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { nope: 1 } } }, e), []);
 });
 
+test("jevPicks: a near-certain pick passes with a middling has_terms (horseshoe 0.48/0.98), at most one such pick", () => {
+  const e = linkEntries(betico);
+  const [rules, terms] = e;
+  const near = (noul, p, extra = {}) => jevPicks({ has_terms: { noul }, terms_link: { probabilities: { [terms.id]: p, ...extra } } }, e);
+  assert.deepEqual(near(0.48, 0.98).map((x) => x.text), ["Terms of Service"]);
+  assert.deepEqual(near(0.48, 0.85), [], "not near-certain");
+  assert.deepEqual(near(0.39, 0.99), [], "has_terms under 0.4");
+  assert.deepEqual(near(0.4, 0.9).map((x) => x.text), ["Terms of Service"], "boundaries are inclusive");
+  // only the near-certain option is a pick on that path: a 0.25 runner-up is not tried
+  assert.deepEqual(near(0.5, 0.92, { [rules.id]: 0.25 }).map((x) => x.text), ["Terms of Service"]);
+});
+
 test("summaries", () => {
   assert.equal(linkSummary({ has_terms: { noul: 0.934 }, terms_link: { probabilities: { a: 0.81, b: 0.19 } } }), "link:0.93/0.81");
   assert.equal(linkSummary(null), "off");

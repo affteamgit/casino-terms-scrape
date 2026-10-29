@@ -5,6 +5,11 @@ const API = "https://api.typesafe.ai/v1/systemone";
 export const MODEL = "jev-1.14.0"; // pinned: aliases move when a new release ships
 export const LINK_NOUL_MIN = 0.7; // "the lobby has a terms link" must be at least this likely before a pick is used
 export const LINK_PICK_MIN = 0.2; // an option is tried when at least this likely (at most two)
+// A near-certain pick is tried even when "a terms link exists" is only middling (horseshoe: has_terms 0.48, pick 0.98 on
+// a /support/terms-and-conditions link captioned "Privacy Policy"). Picks are candidates, the page read is the gate,
+// so this costs at most one page load.
+export const LINK_NOUL_SURE_MIN = 0.4;
+export const LINK_PICK_SURE = 0.9;
 export const PAGE_NOUL_MIN = 0.7; // "this page is the general terms"
 export const MAX_ENTRIES = 60;
 const PAGE_TEXT_CHARS = 6000;
@@ -83,11 +88,14 @@ export function termsLinkQuestions(entries) {
   };
 }
 
-/** Jev's picks worth trying, best first: none unless Jev also thinks a terms link exists. */
+/** Jev's picks worth trying, best first: none unless Jev also thinks a terms link exists, or is near certain of one option. */
 export function jevPicks(answers, entries) {
-  if (!answers || !(answers.has_terms?.noul >= LINK_NOUL_MIN) || !answers.terms_link) return [];
-  return Object.entries(answers.terms_link.probabilities || {}).filter(([, p]) => p >= LINK_PICK_MIN).sort((a, b) => b[1] - a[1])
-    .map(([id, p]) => ({ entry: entries.find((e) => e.id === id), p })).filter((x) => x.entry).slice(0, 2)
+  const noul = answers?.has_terms?.noul;
+  if (!answers || !answers.terms_link || !(noul >= LINK_NOUL_SURE_MIN)) return [];
+  // Confident a terms link exists: up to two options. Middling: only one option Jev is near certain of.
+  const [min, max] = noul >= LINK_NOUL_MIN ? [LINK_PICK_MIN, 2] : [LINK_PICK_SURE, 1];
+  return Object.entries(answers.terms_link.probabilities || {}).filter(([, p]) => p >= min).sort((a, b) => b[1] - a[1])
+    .map(([id, p]) => ({ entry: entries.find((e) => e.id === id), p })).filter((x) => x.entry).slice(0, max)
     .map(({ entry, p }) => ({ ...entry, p }));
 }
 
