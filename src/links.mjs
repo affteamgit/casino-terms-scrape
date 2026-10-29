@@ -122,3 +122,11 @@ export function siblingGuesses(links, pageUrl) {
   }
   return dirs.flatMap((d) => SIBLING_NAMES.map((n) => `${d}/${n}`));
 }
+
+/** Is `href` a page on the casino's domain whose own name (the path's last segment) is the general terms? */
+export function namedTermsPage(href, pageUrl) {
+  let u;
+  try { u = new URL(href); } catch { return false; }
+  const name = u.pathname.split("/").filter(Boolean).pop() || "";
+  return /^https?:$/.test(u.protocol) && withinDomain(host(href), registrable(host(pageUrl))) && STRONG_TERMS_PATH.test(name) && !PROMO.test(name) && !NOT_TERMS.test(name);
+}

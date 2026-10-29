@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, TERMS_TEXT } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -269,7 +269,7 @@ export async function expandSections(page) {
 /**
  * Opens the casino's terms, in this order: anchors that score as the general terms (up to three); for apps whose
  * footer routes from plain elements, a click on the element that reads like the terms link; the sitemap and the
- * paths casinos commonly use; and last, anchors that scored as a promotion's terms, which are better than nothing.
+ * paths casinos commonly use; and last, anchors that scored as a promotion's terms, held to the same terms check.
  * Returns the page's text and URL, and what was tried.
  */
 // Locale prefixes the casinos use for their non-English sites. The extraction patterns read English, so a terms
@@ -361,14 +361,14 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF is fetched as bytes and read in Node. page.request shares the session's cookies but not its proxy: it
   // leaves from this process (the VPN locally, the Actions runner on Browserless), which the file hosts allow.
-  const tryPdf = async (c, lenient) => {
+  const tryPdf = async (c) => {
     try {
       const r = await page.request.get(c.href, { timeout: 30000 });
       if (!r.ok()) throw new Error(`http ${r.status()}`);
       const body = await r.body();
       if (body.length > 20 * 1048576) throw new Error("over 20 MB");
       const text = await pdfText(body);
-      const good = text.length >= 500 && (lenient || await isTermsPage(text, { url: c.href, title: "", headings: [] }));
+      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] });
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };
       tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
@@ -395,38 +395,52 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return null;
   };
   let pageWalled = false; // a wall on a candidate page itself; a wall on a document it links to says nothing about the site
+  // A short page accepted as the terms may be a summary that links the document itself (beef.casino's /terms-use-site:
+  // the opening paragraph and "MEHR LESEN" -> /de/terms-and-conditions). Under 5,000 characters, a link on it to an
+  // own-domain page named as the general terms is read too, and the longer document is kept.
+  const fuller = async (r) => {
+    if (hopping || r.pdf || r.text.length >= 5000) return r;
+    const at = page.url(), bare = (u) => u.replace(/[?#].*$/, "").replace(/\/$/, "");
+    const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80) }))).catch(() => []);
+    const full = links.find((l) => namedTermsPage(l.href, lobby.url) && bare(l.href) !== bare(at) && !visited.has(l.href));
+    dbg("fuller", at, r.text.length, "chars", full ? full.href : "no fuller page");
+    if (!full) return r;
+    hopping = true;
+    try { const f = await tryLink({ href: full.href, text: full.text }); if (f && f.text.length > r.text.length) return { ...f, via: r.via }; } finally { hopping = false; }
+    return r;
+  };
   let unblocked = false;
   const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
-  const tryLink = async (c, lenient = false) => {
+  const tryLink = async (c) => {
     visited.add(c.href);
-    if (isPdf(c.href)) return tryPdf(c, lenient);
+    if (isPdf(c.href)) return tryPdf(c);
     let resp;
     try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) {
       // A PDF served without a .pdf extension makes Chromium start a download instead of rendering.
-      if (/Download is starting/i.test(e.message)) return tryPdf(c, lenient);
+      if (/Download is starting/i.test(e.message)) return tryPdf(c);
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
-    if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() }, lenient);
-    let d = await readDoc(page, c.english ? 15000 : 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() });
+    let d = await readDoc(page, c.english ? 15000 : 35000, readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
-    if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
-    const good = d.ok && (lenient || await isTermsPage(d.text, await pageMeta()));
+    if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
+    const good = d.ok && await isTermsPage(d.text, await pageMeta());
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
+    if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried });
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
     // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
     // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
-    if (unblock && !unblocked && !lenient && !c.english && !hopping && d.note !== "wall" && (c.jev || c.score >= 5)) {
+    if (unblock && !unblocked && !c.english && !hopping && d.note !== "wall" && (c.jev || c.score >= 5)) {
       unblocked = true;
       if (await unblock().catch(() => false)) { tried.push(`${c.href} again without the blocklist`); const r = await tryLink(c); if (r) return r; }
     }
     // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
-    return (await hopFrom(d)) || (lenient || c.english ? null : hubFrom(d));
+    return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
   };
   // Clicks a clickable on the page at `at` and reads what it opened: the app navigates, or opens the document in place.
   // On a lobby an in-place document has to add 2,000 characters; on a hub (`hub`), where a tab replaces one policy with
@@ -551,12 +565,14 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text again and passes the terms check.
     const looksLikeTerms = d.ok && !isLobby(d.text) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
+    if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried });
     const hopped = await hopFrom(d, guessUntil);
     if (hopped) return hopped;
   }
   tried.push(`${guesses.length} sitemap/guessed paths`);
-  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c, true); if (r) return { ...r, via: "promo-terms" }; }
+  // Last, the links that scored as a promotion's terms: one may still be the general terms, so each goes through the
+  // same terms check (a VIP level page is not the terms: starzbet.com).
+  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c); if (r) return { ...r, via: "promo-terms" }; }
   if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
   return { href: "", text: "", via: "", tried };
 }

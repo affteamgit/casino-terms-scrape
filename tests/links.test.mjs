@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses } from "../src/links.mjs";
+import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -132,4 +132,14 @@ test("siblingGuesses: virginbet's only legal link is /dl/cookiepolicy, so the te
   assert.deepEqual(siblingGuesses([L("Privacy Policy", "https://x.com/privacy-policy"), L("Privacy Policy", "https://x.com/en/privacy-policy"), L("Cookies", "https://other.com/legal/cookies"), L("Games", "https://x.com/casino/games")], "https://x.com/"), []);
   // at most two directories
   assert.equal(siblingGuesses([L("Privacy", "https://x.com/a/privacy"), L("Cookies", "https://x.com/b/cookies"), L("Responsible gaming", "https://x.com/c/rg")], "https://x.com/").length, 12);
+});
+
+test("namedTermsPage: an own-domain page whose own name is the general terms (beef.casino's 'MEHR LESEN' link)", () => {
+  const page = "https://beef.casino/de/terms-use-site";
+  assert.equal(namedTermsPage("https://beef.casino/de/terms-and-conditions", page), true);
+  assert.equal(namedTermsPage("https://www.beef.casino/terms-of-service?x=1", page), true);
+  assert.equal(namedTermsPage("https://beef.casino/de/privacy-policy", page), false);
+  assert.equal(namedTermsPage("https://beef.casino/de/bonus-terms-and-conditions", page), false, "a bonus's terms");
+  assert.equal(namedTermsPage("https://other.com/terms-and-conditions", page), false);
+  assert.equal(namedTermsPage("https://beef.casino/terms-and-conditions/privacy", page), false);
 });
