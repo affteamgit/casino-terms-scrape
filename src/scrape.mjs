@@ -143,7 +143,8 @@ async function attempt(job, url, country, type) {
     } catch (e) { return { status: "load_error", error: clip(e.message, 200), chain }; }
     const text = await settle(page, httpStatus);
     const finalUrl = page.url();
-    const status = lobbyStatus({ text, httpStatus, finalUrl });
+    const anchors = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80), footer: !!a.closest("footer, [class*=footer i], #footer") }))).catch(() => []);
+    const status = lobbyStatus({ text, httpStatus, finalUrl, links: anchors });
     // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
     if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
     const { ip, ip_country } = status === "ok" ? await whereAmI(context) : { ip: "", ip_country: "" };

@@ -337,3 +337,13 @@ test("an in-place modal that opens like a promotion is not accepted on the patte
     assert.match(general.text, /^General Terms and Conditions/);
   } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
 });
+
+test("lobbyStatus: maintenance only for a bare page, not a lobby with a 'under maintenance' banner", () => {
+  const text = "Live casino under maintenance. We'll be back soon. " + "Slots, jackpots and table games are open as usual. ".repeat(6);
+  const few = [{ href: "https://x.com/", text: "Home" }];
+  const many = Array.from({ length: 12 }, (_, i) => ({ href: `https://x.com/g/${i}`, text: `Game ${i}` }));
+  assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: few }), "maintenance");
+  assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: many }), "ok", "a lobby full of links");
+  assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/", links: [...few, { href: "https://x.com/terms-and-conditions", text: "Terms and Conditions", footer: true }] }), "ok", "a lobby that links its terms");
+  assert.equal(lobbyStatus({ text, finalUrl: "https://x.com/" }), "maintenance", "no anchors given: the text decides");
+});

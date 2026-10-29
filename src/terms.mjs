@@ -18,17 +18,19 @@ const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenanc
 /**
  * What the first page says about reaching the casino. The checks run in this order: a domain marketplace's address,
  * a bot check (whatever the HTTP code: lumocasino answers 405 with "Human Verification"), a page that says the country
- * is blocked, a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page, and last an
+ * is blocked, a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page (`links`: the
+ * page's anchors; a page with ten or more, or with its terms link, is not one), and last an
  * error code or an empty page. Anything else is "ok".
  */
-export function lobbyStatus({ text, httpStatus = 0, finalUrl = "" }) {
+export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] }) {
   if (isParkedUrl(finalUrl)) return "parked"; // a domain marketplace answers for it, whatever it says
   if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "challenge";
   if (BLOCK_TEXT.test(text.slice(0, 5000))) return "geo_blocked"; // the page says so
   if (httpStatus === 403 || httpStatus === 451) return "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
   if (TRACKER_HOSTS.test(host(finalUrl))) return "stuck_on_tracker";
   if (isParked(text)) return "parked"; // a for-sale page, not a casino
-  if (text.length < 3000 && MAINTENANCE_TEXT.test(text)) return "maintenance";
+  // Maintenance is a bare page: a lobby with a "live casino under maintenance" banner has its links and its terms.
+  if (text.length < 3000 && MAINTENANCE_TEXT.test(text) && links.length < 10 && !termsCandidates(links, finalUrl).some((c) => c.score >= 5)) return "maintenance";
   if (httpStatus >= 400 || text.length < 200) return "dead_or_empty";
   return "ok";
 }
