@@ -405,8 +405,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     }
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() }, lenient);
     let d = await readDoc(page, c.english ? 15000 : 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
-    // The /en/ variant is invented, not a link the casino gave: it counts only when it kept its /en segment and is not the lobby again.
-    if (c.english && (!/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
+    // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
+    // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
+    if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
@@ -415,7 +416,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    return (await hopFrom(d)) || (lenient ? null : hubFrom(d));
+    // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
+    return (await hopFrom(d)) || (lenient || c.english ? null : hubFrom(d));
   };
   // Clicks a clickable on the page at `at` and reads what it opened: the app navigates, or opens the document in place.
   // On a lobby an in-place document has to add 2,000 characters; on a hub (`hub`), where a tab replaces one policy with
