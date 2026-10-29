@@ -13,6 +13,8 @@ const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.co
 export const isPdf = (u) => /\.pdf(\?|#|$)/i.test(u);
 
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; } };
+/** Is host `h` the domain `own` or a subdomain of it? (evilclubscasino.com is not clubscasino.com.) */
+export const withinDomain = (h, own) => !!own && (h === own || h.endsWith("." + own));
 export const registrable = (h) => { const l = h.split("."); return l.slice(l.length > 2 && /^(co|com|net|org|ac|gov|edu)$/.test(l[l.length - 2]) ? -3 : -2).join("."); };
 const path = (u) => { try { const x = new URL(u); return x.pathname + x.hash; } catch { return ""; } };
 const isHome = (u) => /^\/?(#.*)?$/.test(path(u)) || /^(index|home)\.\w+$/.test(path(u).replace(/^\//, ""));
@@ -73,7 +75,8 @@ export function regionalSites(links, pageUrl, country = "") {
 /**
  * A thin terms page that only says "use the link below to view or download the Terms of Use" (clubscasino.com):
  * the links on it that lead to the document. A PDF, or a link whose text says download, view, open or read, or names
- * the terms; on the casino's own domain or a file host. PDFs and links that name the terms come first; at most two.
+ * the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
+ * casino's own domain or a file host. PDFs and links that name the terms come first; at most two.
  */
 export function docLinks(links, pageUrl) {
   const home = registrable(host(pageUrl)), seen = new Set();
@@ -81,8 +84,10 @@ export function docLinks(links, pageUrl) {
   return links.filter((l) => {
     if (!/^https?:/i.test(l.href) || isHome(l.href) || l.href === pageUrl || seen.has(l.href)) return false;
     const text = (l.text || "").trim(), name = path(l.href).split("/").filter(Boolean).pop() || "";
-    if (!(isPdf(l.href) || /download|view|open|read/i.test(text) || TERMS_TEXT.test(text))) return false;
-    if (!(host(l.href).endsWith(home) || FILE_HOST.test(host(l.href)))) return false;
+    // A verb alone ("Read more") is not enough: it has to lead to something shaped like a document.
+    const verb = /\b(download|view|open|read)\b/i.test(text);
+    if (!(isPdf(l.href) || TERMS_TEXT.test(text) || (verb && (/\.(pdf|docx?)(\?|#|$)/i.test(l.href) || /upload|files|docs|documents|static|media/i.test(path(l.href)))))) return false;
+    if (!(withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href)))) return false;
     if (NOT_TERMS.test(text + " " + name) || PROMO.test(text + " " + name)) return false;
     seen.add(l.href);
     return true;

@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
   assert.equal(isParked("English Copyright © 2026 GoDaddy Operating Company, LLC. Alle Rechte vorbehalten."), true);
   assert.equal(isParked("The domain name ScatterHall.com is for sale!"), true);
+  assert.equal(isParked("Secured by GoDaddy. Play slots here. Licensed in Curacao. 18+ Gamble responsibly."), false, "an SSL seal is not a parked page");
+  assert.equal(isParked("Welcome. Download our app, abandon.com and mundane.com are not for us."), false);
   assert.equal(isParked("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "This domain is operated by Example N.V."), false);
 });
 
@@ -74,5 +76,54 @@ test("dismissCookies reads the Danish and French wording of the accept button", 
       assert.equal(await dismissCookies(page), true, label);
       assert.equal(await page.evaluate(() => !!document.getElementById("cc")), false, "the banner is gone");
     }
+  } finally { await browser.close(); }
+});
+
+test("notCasino: a lookalike domain's terms link is not the casino's own", () => {
+  const review = "megafrenzy.com is an independent review site and does not run any casino.";
+  assert.match(notCasino(review, [{ href: "https://evilmegafrenzy.com/terms", score: 10 }], "https://megafrenzy.com/"), /review/);
+  assert.equal(notCasino(review, [{ href: "https://help.megafrenzy.com/terms", score: 10 }], "https://megafrenzy.com/"), "");
+});
+
+test("guessUrls: the twelve likeliest paths, with their language and English variants not counted", () => {
+  assert.deepEqual(GUESS_PATHS.slice(0, 6), ["/terms-and-conditions", "/terms", "/terms-of-service", "/rules", "/user-agreement", "/terms-of-use"]);
+  const plain = guessUrls("https://x.com", "");
+  assert.equal(plain.length, 12);
+  assert.ok(plain.includes("https://x.com/rules") && plain.includes("https://x.com/user-agreement"));
+  assert.ok(!plain.includes("https://x.com/tc"));
+  const no = guessUrls("https://x.com", "/no");
+  assert.equal(no.length, 36, "12 paths x (english, lobby language, bare)");
+  assert.deepEqual(no.slice(0, 3), ["https://x.com/en/terms-and-conditions", "https://x.com/no/terms-and-conditions", "https://x.com/terms-and-conditions"]);
+  assert.equal(guessUrls("https://x.com", "/ca").length, 24, "ca is not a language: no /en variant");
+});
+
+// WordPress Cookie Notice puts "cookies-not-set" on <body>, so everything on the page is "inside" a cookie element.
+const WP = `<!doctype html><html><body class="cookies-not-set"><header><nav><a href="https://casino.example/continue" onclick="window.__clicked=(window.__clicked||0)+1;return false">Continue</a>
+<a href="https://casino.example/ok" onclick="window.__clicked=(window.__clicked||0)+1;return false">OK</a></nav></header>
+<main><a href="https://casino.example/agree" onclick="window.__clicked=(window.__clicked||0)+1;return false">Agree</a><p>Play now.</p></main>
+<footer><a href="https://casino.example/terms-and-conditions">Terms and Conditions</a><a href="https://casino.example/privacy">Privacy Policy</a><p>${"Licensed and regulated. ".repeat(10)}</p></footer></body></html>`;
+
+test("a cookie class on <body> does not make the whole page a banner", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(WP);
+    assert.equal(await dismissCookies(page), false);
+    assert.equal(await page.evaluate(() => window.__clicked || 0), 0, "no link was clicked");
+    const lobby = await readLobby(page);
+    assert.match(lobby.footer, /Terms and Conditions/);
+    assert.match(lobby.footer, /Licensed and regulated/);
+    assert.equal(lobby.links.find((l) => /terms-and-conditions/.test(l.href)).footer, true);
+    assert.equal(lobby.links.find((l) => /continue/.test(l.href)).footer, false);
+  } finally { await browser.close(); }
+});
+
+test("a registration form that calls itself consent is not a cookie banner", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><div class="consent-box"><form><input name="email"><input type="password"><input name="x"><button type="button" onclick="window.__clicked=1">Agree</button></form></div></body></html>`);
+    assert.equal(await dismissCookies(page), false);
+    assert.equal(await page.evaluate(() => window.__clicked || 0), 0);
   } finally { await browser.close(); }
 });

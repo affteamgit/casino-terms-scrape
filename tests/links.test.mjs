@@ -95,6 +95,10 @@ test("docLinks: a thin terms page's link to its document; privacy PDFs and other
   assert.deepEqual(docLinks(links, page).map((l) => l.href), [pdf]);
   assert.deepEqual(docLinks([L("Terms of Use", "https://other.com/terms-of-use.pdf"), L("Download", "https://other.com/x")], page), [], "an off-domain PDF is not the casino's");
   assert.deepEqual(docLinks([L("Download", "https://d1abc.cloudfront.net/legal/terms.pdf")], page).map((l) => l.href), ["https://d1abc.cloudfront.net/legal/terms.pdf"], "a file host is");
-  assert.deepEqual(docLinks([L("View document", "https://clubscasino.com/legal/doc-7"), L("Read more", "https://clubscasino.com/blog/win-big")], page).map((l) => l.href), ["https://clubscasino.com/legal/doc-7", "https://clubscasino.com/blog/win-big"]);
+  assert.deepEqual(docLinks([L("View document", "https://clubscasino.com/wp-content/uploads/2026/terms-of-use"), L("Read more", "https://clubscasino.com/blog/win-big"), L("Open", "https://clubscasino.com/legal/doc-7")], page).map((l) => l.href),
+    ["https://clubscasino.com/wp-content/uploads/2026/terms-of-use"], "a bare verb needs a document-shaped target: Read more -> a blog post is not chosen");
+  assert.deepEqual(docLinks([L("Download", "https://clubscasino.com/files/t.docx")], page).length, 1);
+  assert.deepEqual(docLinks([L("Terms of Use", "https://evilclubscasino.com/terms.pdf"), L("Download", "https://evilclubscasino.com/uploads/t.pdf")], page), [], "a lookalike domain is not the casino");
+  assert.equal(docLinks([L("Download", "https://cdn.clubscasino.com/t.pdf")], page).length, 1, "a subdomain is");
   assert.equal(docLinks(Array.from({ length: 6 }, (_, i) => L("Download", `https://clubscasino.com/f${i}.pdf`)), page).length, 2, "two at most");
 });

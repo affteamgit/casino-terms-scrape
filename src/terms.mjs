@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, TERMS_TEXT } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, withinDomain, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -31,19 +31,34 @@ export async function settle(page, httpStatus = 0) {
 // A cookie banner can cover the footer, and on some lobbies (bet25.dk) the consent text is all the page shows until it
 // is accepted. Only a button inside something that calls itself a cookie, consent or GDPR element is clicked.
 const CONSENT_TEXT = "^(accept( all| cookies| all cookies)?|agree|i agree|got it!?|ok(ay)?|allow( all)?( cookies)?|consent|continue|accepter( alle| tout| alt)?|tillad( alle)?( cookies)?|tout accepter|alles accepteren|akzeptieren|alle akzeptieren|godkend( alle)?|hyväksy( kaikki)?|aceptar( todo)?|accetta( tutto)?|aceitar( todos)?|zgadzam się|accepteren|acceptera( alla)?|godta( alle)?)$";
+// Runs inside the page: is this element part of a cookie banner? The nearest ancestor that calls itself a cookie,
+// consent or GDPR element counts only when it is a banner-sized thing: not <body> or <html> (WordPress Cookie Notice
+// puts "cookies-not-set" on body), not a registration or login form ("consent" boxes), and not a wrapper around the
+// whole page (long text that holds the page's own footer, main or navigation).
+export function inBannerInPage(el) {
+  const SEL = "[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i], [aria-label*=cookie i]";
+  for (let c = el.closest(SEL); c; c = c.parentElement && c.parentElement.closest(SEL)) {
+    if (c === document.body || c === document.documentElement) continue;
+    // Judged once per container: every link of the page asks about the same few ancestors.
+    if (c.__banner === undefined) c.__banner = !c.querySelector("input[type=password]") && ![...c.querySelectorAll("form")].some((f) => f.querySelectorAll("input").length >= 3)
+      && !((c.innerText || "").length > 3000 && c.querySelector("footer, main, nav, header, article"));
+    if (c.__banner) return true;
+  }
+  return false;
+}
 export async function dismissCookies(page) {
-  return page.evaluate((re) => {
+  const find = (re, inBanner) => {
     const r = new RegExp(re, "i");
-    const inBanner = (el) => !!el.closest("[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i], [aria-label*=cookie i]");
     const btn = [...document.querySelectorAll("button, a, [role=button]")].find((el) => inBanner(el) && r.test((el.innerText || "").trim().replace(/\s+/g, " ")));
     if (!btn) return false;
     btn.click();
     return true;
-  }, CONSENT_TEXT).catch(() => false);
+  };
+  return page.evaluate(`(${find})(${JSON.stringify(CONSENT_TEXT)}, ${inBannerInPage})`).catch(() => false);
 }
 
 // A parked or for-sale domain is not a casino: it gets its own status so it does not count as reached.
-export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy|sedo\.com|dan\.com|afternic|hugedomains|domain (has )?expired|make an offer/i;
+export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy operating company|sedo\.com|\bdan\.com\b|afternic|hugedomains|domain (has )?expired|make an offer/i;
 export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.slice(0, 3000));
 // Some for-sale pages refuse the scraper (godaddy's says "Access Denied"), so the address itself is also read:
 // a domain marketplace or parking service is not a casino whatever it answers.
@@ -57,12 +72,16 @@ export function notCasino(text, cands, pageUrl) {
   const m = NOT_CASINO_TEXT.exec(text);
   if (!m) return "";
   const own = registrable(host(pageUrl));
-  if (cands.some((c) => c.score >= 5 && host(c.href).endsWith(own))) return "";
+  if (cands.some((c) => c.score >= 5 && withinDomain(host(c.href), own))) return "";
   return m[0].toLowerCase();
 }
 
-// Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
-// anything the lobby says about terms. Same opening, or a length within 5% of the lobby's hidden text.
+/**
+ * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
+ * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
+ * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
+ * first 500 characters, for a lobby whose text grew a little since it was measured.
+ */
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
@@ -88,10 +107,9 @@ export async function readLobby(page) {
   }
   // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
   // links vanished from the DOM once the page was scrolled back to the top).
-  const lobby = await page.evaluate((clickRe) => {
+  const read = (clickRe, inBanner) => {
     const re = new RegExp(clickRe, "i");
     // A cookie banner's own "footer" is not the page's (bet25.dk's consent dialog has one and the page has none).
-    const inBanner = (el) => !!el.closest("[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i]");
     const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer") && !inBanner(el);
     const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
     const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
@@ -107,7 +125,8 @@ export async function readLobby(page) {
     }
     clickables.sort((a, b) => (b.footer ? 1 : 0) - (a.footer ? 1 : 0));
     return { url: location.href, footer, links, clickables };
-  }, CLICK_TEXT).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
+  };
+  const lobby = await page.evaluate(`(${read})(${JSON.stringify(CLICK_TEXT)}, ${inBannerInPage})`).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
   return lobby;
 }
 
@@ -178,11 +197,29 @@ export function englishVariant(href) {
   try { const u = new URL(href); if (!NON_ENGLISH.test(u.pathname)) return ""; u.pathname = u.pathname.replace(NON_ENGLISH, "/en"); return u.href; } catch { return ""; }
 }
 
+// The paths casinos commonly use, most likely first. The guess phase tries the first twelve; each is also tried with
+// the lobby's language prefix, the English prefix and bare, and those variants do not count against the twelve.
+export const GUESS_PATHS = ["/terms-and-conditions", "/terms", "/terms-of-service", "/rules", "/user-agreement", "/terms-of-use", "/terms-conditions",
+  "/general-terms-and-conditions", "/legal/terms-and-conditions", "/legal/terms", "/info/terms-and-conditions", "/help/terms-and-conditions",
+  "/pages/terms-and-conditions", "/page/terms-and-conditions", "/tc"];
+export function guessUrls(origin, lang = "") {
+  const out = [];
+  for (const p of GUESS_PATHS.slice(0, 12)) {
+    if (NON_ENGLISH.test(lang)) out.push(`${origin}/en${p}`);
+    out.push(`${origin}${lang}${p}`);
+    if (lang) out.push(`${origin}${p}`);
+  }
+  return out;
+}
+
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const tried = [];
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
+  // Is this the lobby again? An app routes an unknown path (a guessed one, an invented /en/ variant) to its shell.
+  const lobbyRef = { len: lobbyText.length, fp: fingerprint(lobbyText) };
+  const isLobby = (text) => !!lobbyText && (sameAsLobby(text, lobbyRef) || text.slice(0, 300) === lobbyText.slice(0, 300));
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
   // The page read validates every candidate, so a wrong pick costs one page load; no key or an error changes nothing.
@@ -247,19 +284,24 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   };
   // A thin terms page that only offers its document ("use the link below to view or download the Terms of Use"):
   // reached, not a wall, named like terms, and not itself the terms. Its own links to a document (a PDF, or "download",
-  // "view") on the casino's domain or a file host are read, two at most and one hop only.
-  let hopping = false;
-  const hopFrom = async (d) => {
-    if (hopping || d.note === "wall") return null;
+  // "view") on the casino's domain or a file host are read, one hop only, at most twice per casino and never the same
+  // document twice. `until` is the guess phase's deadline.
+  let hopping = false, hopsLeft = 2;
+  const hoppedDocs = new Set();
+  const hopFrom = async (d, until = Infinity) => {
+    if (hopping || hopsLeft <= 0 || d.note === "wall" || Date.now() > until) return null;
     const from = page.url(), meta = await pageMeta();
     if (!TERMS_TEXT.test([meta.title, ...meta.headings].join(" "))) return null;
     const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.title || "").trim().slice(0, 80) }))).catch(() => []);
-    const docs = docLinks(links, from);
+    const docs = docLinks(links, from).filter((l) => !hoppedDocs.has(l.href));
     dbg("hop", from, docs.map((l) => `${l.href} "${l.text}"`).join(" | ") || "no document link");
+    if (!docs.length) return null;
+    hopsLeft--;
     hopping = true;
-    try { for (const doc of docs) { const r = await tryLink(doc); if (r) return { ...r, via: from }; } } finally { hopping = false; }
+    try { for (const doc of docs) { if (Date.now() > until) break; hoppedDocs.add(doc.href); const r = await tryLink(doc); if (r) return { ...r, via: from }; } } finally { hopping = false; }
     return null;
   };
+  let pageWalled = false; // a wall on a candidate page itself; a wall on a document it links to says nothing about the site
   const tryLink = async (c, lenient = false) => {
     if (isPdf(c.href)) return tryPdf(c, lenient);
     let resp;
@@ -269,7 +311,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() }, lenient);
-    let d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    let d = await readDoc(page, c.english ? 15000 : 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    // The /en/ variant is invented, not a link the casino gave: it counts only when it kept its /en segment and is not the lobby again.
+    if (c.english && (!/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
+    if (d.note === "wall" && !hopping) pageWalled = true;
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
@@ -284,9 +329,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
   for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
     const en = englishVariant(c.href);
-    for (const v of [...(en ? [{ ...c, href: en }] : []), ...(c.href.includes("?") ? [clean(c), c] : [c])]) { const r = await tryLink(v); if (r) return r; }
+    pageWalled = false;
+    for (const v of [...(en ? [{ ...c, href: en, english: true }] : []), ...(c.href.includes("?") ? [clean(c), c] : [c])]) { const r = await tryLink(v); if (r) return r; }
     // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
-    if (/\(wall\)$/.test(tried[tried.length - 1] || "")) return { href: "", text: "", via: "", tried, walled: true };
+    if (pageWalled) return { href: "", text: "", via: "", tried, walled: true };
   }
   for (const c of lobby.clickables.slice(0, 2)) {
     try {
@@ -330,9 +376,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const origin = new URL(lobby.url).origin;
   const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
   const guesses = [];
+  const guessUntil = Date.now() + 180000; // the whole guessing phase, sitemap included, gets three minutes
   // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
   const TERMS_URL = /terms|conditions|\btos\b|termos|\bagb\b|regulamin|user-?agreement|general-?rules/i, NOT_TERMS_URL = /privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game|blog|news/i;
   const sitemap = async (u) => {
+    if (Date.now() > guessUntil) return { index: false, locs: [] };
     try {
       await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
       const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
@@ -345,23 +393,17 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   if (sm.index) { for (const child of sm.locs.filter((l) => !/product|game|slot|blog|news|image|video|post/i.test(l)).slice(0, 3)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
   for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) guesses.push(loc); if (guesses.length >= 4) break; }
-  // The paths casinos commonly use, with the lobby's language prefix and without it.
-  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/terms-of-use", "/terms-conditions", "/general-terms-and-conditions", "/info/terms-and-conditions", "/help/terms-and-conditions", "/legal/terms", "/legal/terms-and-conditions", "/pages/terms-and-conditions", "/page/terms-and-conditions", "/user-agreement", "/rules", "/tc"]) {
-    if (NON_ENGLISH.test(lang)) guesses.push(`${origin}/en${p}`);
-    guesses.push(`${origin}${lang}${p}`);
-    if (lang) guesses.push(`${origin}${p}`);
-  }
-  const guessUntil = Date.now() + 180000; // the whole guessing phase gets three minutes
-  for (const href of [...new Set(guesses)].slice(0, 12)) {
+  guesses.push(...guessUrls(origin, lang));
+  for (const href of [...new Set(guesses)]) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
     try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
     const d = await readDoc(page, 8000, readsLikeTerms);
     if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
-    // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
-    const looksLikeTerms = d.ok && d.text.length > Math.min(lobbyText.length * 0.5, 8000) + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300) && (await isTermsPage(d.text, await pageMeta()));
+    // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text again and passes the terms check.
+    const looksLikeTerms = d.ok && !isLobby(d.text) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
     if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
-    const hopped = await hopFrom(d);
+    const hopped = await hopFrom(d, guessUntil);
     if (hopped) return hopped;
   }
   tried.push(`${guesses.length} sitemap/guessed paths`);
