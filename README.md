@@ -131,7 +131,8 @@ node src/merge.mjs                                   # out/results.csv, out/resu
 ```
 
 `PROXY_PLAN=local:no` tries every casino through the local Chrome once (the country code is a label for the rows;
-the VPN decides the real exit, which the log prints at start). `LOCAL_HEADLESS=false` shows the browser windows.
+the VPN decides the real exit, which the log prints at start). `LOCAL_HEADLESS=false` shows the browser windows;
+the full local run is made headed (`LOCAL_HEADLESS=false`), since headed Chrome got 6 of 11 Cloudflare-blocked casinos through.
 `--ids id1,id2 --force` re-runs casinos that already have a result.
 The local Chrome asks for English (`--lang=en-US`, locale `en-US`), and a terms link under a language prefix (`/no/rules`)
 is tried at `/en/` first, since the quote patterns read English.
