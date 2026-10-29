@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -301,4 +301,13 @@ test("readLobby: a text that is both a promo caption and the footer's link is th
     const l2 = await readLobby(page);
     assert.equal(await page.evaluate((sel) => document.querySelector(sel).id, l2.clickables.find((c) => /vilkår/i.test(c.text)).sel), "p2");
   } finally { await browser.close(); }
+});
+
+test("sitemap picks are judged on the path, not the casino's name (dragonslots-1.com)", () => {
+  const o = "https://dragonslots-1.com";
+  assert.deepEqual(sitemapChildren([`${o}/sitemap.page-en.xml`, `${o}/sitemap.game-en.xml`, `${o}/sitemap.page-de.xml`, `${o}/sitemap.blog.xml`, `${o}/sitemap.page-es.xml`, `${o}/sitemap.page-it.xml`]),
+    [`${o}/sitemap.page-en.xml`, `${o}/sitemap.page-de.xml`, `${o}/sitemap.page-es.xml`]);
+  assert.deepEqual(sitemapTerms([`${o}/rules`, `${o}/rules/responsible-gaming`, `${o}/rules/terms-and-conditions`, `${o}/rules/bonus-terms`, `${o}/rules/privacy`]), [`${o}/rules/terms-and-conditions`]);
+  assert.deepEqual(sitemapTerms(["https://gamesbet.com/terms", "https://sportcasino.io/en/terms-of-use"]), ["https://gamesbet.com/terms", "https://sportcasino.io/en/terms-of-use"]);
+  assert.equal(sitemapTerms(Array.from({ length: 9 }, (_, i) => `https://x.com/${i}/terms`)).length, 4);
 });

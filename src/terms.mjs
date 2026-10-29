@@ -294,6 +294,15 @@ export function guessUrls(origin, lang = "") {
   return out;
 }
 
+// What the sitemap step reads, judged on the URL's path: the host is the casino's name, and dragonslots-1.com's own
+// "slots" made every child sitemap look like a game sitemap.
+const TERMS_URL = /terms|conditions|\btos\b|termos|\bagb\b|regulamin|user-?agreement|general-?rules/i, NOT_TERMS_URL = /privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game|blog|news/i;
+const urlPath = (u) => { try { return new URL(u).pathname; } catch { return u; } };
+/** The first three child sitemaps of an index that are not game, product, blog, news or media sitemaps. */
+export const sitemapChildren = (locs) => locs.filter((l) => !/product|game|slot|blog|news|image|video|post/i.test(urlPath(l))).slice(0, 3);
+/** Up to four sitemap locations whose path names the general terms. */
+export const sitemapTerms = (locs) => locs.filter((l) => TERMS_URL.test(urlPath(l)) && !NOT_TERMS_URL.test(urlPath(l))).slice(0, 4);
+
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const tried = [];
@@ -508,7 +517,6 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const guesses = siblingGuesses(lobby.links, lobby.url);
   const guessUntil = Date.now() + 180000; // the whole guessing phase, sitemap included, gets three minutes
   // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
-  const TERMS_URL = /terms|conditions|\btos\b|termos|\bagb\b|regulamin|user-?agreement|general-?rules/i, NOT_TERMS_URL = /privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game|blog|news/i;
   const sitemap = async (u) => {
     if (Date.now() > guessUntil) return { index: false, locs: [] };
     try {
@@ -520,10 +528,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   let sm = await sitemap(`${origin}/sitemap.xml`);
   if (!sm.locs.length) sm = await sitemap(`${origin}/sitemap_index.xml`);
   const pools = [];
-  if (sm.index) { for (const child of sm.locs.filter((l) => !/product|game|slot|blog|news|image|video|post/i.test(l)).slice(0, 3)) pools.push((await sitemap(child)).locs); }
+  if (sm.index) { for (const child of sitemapChildren(sm.locs)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
-  let fromSitemap = 0;
-  for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) { guesses.push(loc); fromSitemap++; } if (fromSitemap >= 4) break; }
+  guesses.push(...sitemapTerms(pools.flat()));
   guesses.push(...guessUrls(origin, lang));
   for (const href of [...new Set(guesses)]) {
     if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
