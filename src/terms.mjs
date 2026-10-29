@@ -339,7 +339,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     return null;
   };
   let pageWalled = false; // a wall on a candidate page itself; a wall on a document it links to says nothing about the site
+  const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
   const tryLink = async (c, lenient = false) => {
+    visited.add(c.href);
     if (isPdf(c.href)) return tryPdf(c, lenient);
     let resp;
     try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) {
@@ -359,7 +361,58 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    return hopFrom(d);
+    return (await hopFrom(d)) || (lenient ? null : hubFrom(d));
+  };
+  // Clicks a clickable on the page at `at` and reads what it opened: the app navigates, or opens the document in place.
+  // On a lobby an in-place document has to add 2,000 characters; on a hub (`hub`), where a tab replaces one policy with
+  // another, the text has to change (another start and a length 5% or more apart).
+  const clickOpen = async (target, at, hub = false) => {
+    const before = await bodyText(page);
+    // What the page hides, to tell a document the click opened from the page's own text (megafrenzy.com).
+    const lh = await page.evaluate(hiddenTextInPage).catch(() => "");
+    const pageHidden = { len: lh.length, fp: fingerprint(lh) };
+    const changed = (t) => hub ? fingerprint(t) !== fingerprint(before) && Math.abs(t.length - before.length) > before.length * 0.05 : t.length >= before.length + 2000;
+    // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
+    await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
+    for (let i = 0; i < 8 && page.url() === at && !changed(await bodyText(page)); i++) await sleep(1500);
+    let d = await readDoc(page, 15000, readsLikeTerms);
+    const navigated = page.url() !== at;
+    if ((navigated || changed(d.text)) && !readsLikeTerms(d.text) && await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms);
+    dbg("click", target.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
+    // No navigation and the hidden text is the page's own: nothing opened, whatever it says about terms.
+    const unchanged = !navigated && d.hidden && sameAsLobby(d.text, pageHidden);
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(d.text, await pageMeta())) return { r: { href: navigated ? page.url() : `${at}#"${target.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried } };
+    tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
+    return { navigated, d };
+  };
+  // A candidate page that is a hub of the casino's policies (tonplay.com's /policies/tonplay opens on its Dispute
+  // Resolution Policy, and the Terms and Conditions are a tab with no href) is read like a lobby: its own terms link is
+  // tried, else its terms tab is clicked. Once per casino, on the casino's own domain, never back to a page already tried.
+  let hubLeft = 1;
+  const hubFrom = async (d) => {
+    if (hopping || hubLeft <= 0 || !d.ok || isLobby(d.text)) return null;
+    const at = page.url(), bare = (u) => u.replace(/#.*$/, "");
+    if (!withinDomain(host(at), registrable(host(lobby.url)))) return null;
+    hopping = true;
+    try {
+      const sub = await readLobby(page, { quietMs: 3000, maxMs: 10000 });
+      const link = termsCandidates(sub.links, lobby.url).find((x) => x.score > 0 && bare(x.href) !== bare(at) && !visited.has(x.href));
+      let click = sub.clickables[0];
+      dbg("hub", at, link ? link.href : "no link", click ? `"${click.text}"` : "no clickable");
+      if (!link && !click) return null;
+      hubLeft--;
+      if (link) { const r = await tryLink(link); if (r) return { ...r, via: "hub" }; }
+      if (click) {
+        if (page.url() !== at) {
+          await page.goto(at, { waitUntil: "domcontentloaded", timeout: 45000 }); await settle(page);
+          click = (await readLobby(page, { quietMs: 3000, maxMs: 10000 })).clickables.find((x) => x.text === click.text);
+          if (!click) return null;
+        }
+        const o = await clickOpen(click, at, true);
+        if (o.r) return { ...o.r, via: "hub" };
+      }
+    } catch (e) { tried.push(`hub ${at} (${clip(e.message, 60)})`); } finally { hopping = false; }
+    return null;
   };
   // An affiliate landing carries its tracking parameters into every link (go.netbet.co.uk); the page behind the
   // clean URL is the one a player reads, so it is tried first.
@@ -376,21 +429,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
       if (page.url() !== lobby.url) { await page.goto(lobby.url, { waitUntil: "domcontentloaded", timeout: 45000 }); await settle(page); lobby = await readLobby(page); }
       const target = lobby.clickables.find((x) => x.text === c.text);
       if (!target) { tried.push(`click "${c.text}" (gone)`); continue; }
-      const before = await bodyText(page);
-      // What the lobby hides, to tell a document the click opened from the lobby's own text (megafrenzy.com).
-      const lh = await page.evaluate(hiddenTextInPage).catch(() => "");
-      const lobbyHidden = { len: lh.length, fp: fingerprint(lh) };
-      // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
-      await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
-      // Either the app navigates, or it opens the document in place.
-      for (let i = 0; i < 8 && page.url() === lobby.url && (await bodyText(page)).length < before.length + 2000; i++) await sleep(1500);
-      const d = await readDoc(page, 15000, readsLikeTerms);
-      const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
-      dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      // No navigation and the hidden text is the lobby's own: nothing opened, whatever it says about terms.
-      const unchanged = !navigated && d.hidden && sameAsLobby(d.text, lobbyHidden);
-      if (!unchanged && (navigated ? d.ok : grew) && await isTermsPage(d.text, await pageMeta())) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
-      tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
+      const { r, navigated, d } = await clickOpen(target, lobby.url);
+      if (r) return r;
       if (navigated) { const r = await hopFrom(d); if (r) return r; }
     } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
   }
