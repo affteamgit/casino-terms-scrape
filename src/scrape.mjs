@@ -6,7 +6,7 @@ import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
 import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
-import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms, isParked, notCasino } from "./terms.mjs";
+import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms, isParked, isParkedUrl, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -143,7 +143,8 @@ async function attempt(job, url, country, type) {
     } catch (e) { return { status: "load_error", error: clip(e.message, 200), chain }; }
     const text = await settle(page, httpStatus);
     const finalUrl = page.url();
-    if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) status = "challenge";
+    if (isParkedUrl(finalUrl)) status = "parked"; // a domain marketplace answers for it, whatever it says
+    else if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) status = "challenge";
     else if (BLOCK_TEXT.test(text.slice(0, 5000))) status = "geo_blocked"; // the page says so
     else if (httpStatus === 403 || httpStatus === 451) status = "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
     else if (TRACKER_HOSTS.test(host(finalUrl))) status = "stuck_on_tracker";

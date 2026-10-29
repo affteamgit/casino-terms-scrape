@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, notCasino, sameAsLobby, fingerprint } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -54,4 +54,25 @@ test("sameAsLobby: a hidden text that is the lobby's own is nothing opened", () 
   assert.equal(sameAsLobby("x".repeat(Math.round(lobby.length * 1.04)), ref), true, "within 5% of the length");
   assert.equal(sameAsLobby("General Terms and Conditions. " + "x".repeat(lobby.length * 2), ref), false);
   assert.equal(sameAsLobby("General Terms ".repeat(300), { len: 0, fp: "" }), false, "a lobby with no hidden text");
+});
+
+test("isParkedUrl: domain marketplaces and parking services, not casinos", () => {
+  assert.equal(isParkedUrl("https://forsale.godaddy.com/forsale/scatterhall.com?utm_source=x"), true);
+  assert.equal(isParkedUrl("https://www.sedo.com/search/details/?domain=x.com"), true);
+  assert.equal(isParkedUrl("https://dan.com/buy-domain/x.com"), true);
+  assert.equal(isParkedUrl("https://www.godaddy.com/"), false);
+  assert.equal(isParkedUrl("https://scatterhall.com/"), false);
+  assert.equal(isParkedUrl("not a url"), false);
+});
+
+test("dismissCookies reads the Danish and French wording of the accept button", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    for (const label of ["ACCEPTER ALLE", "Tout accepter", "Tillad alle"]) {
+      await page.setContent(`<html><body><div class="cookie-banner" id="cc"><button>Afvis alle</button><button onclick="document.getElementById('cc').remove()">${label}</button></div></body></html>`);
+      assert.equal(await dismissCookies(page), true, label);
+      assert.equal(await page.evaluate(() => !!document.getElementById("cc")), false, "the banner is gone");
+    }
+  } finally { await browser.close(); }
 });

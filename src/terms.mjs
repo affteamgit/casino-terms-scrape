@@ -30,7 +30,7 @@ export async function settle(page, httpStatus = 0) {
 
 // A cookie banner can cover the footer, and on some lobbies (bet25.dk) the consent text is all the page shows until it
 // is accepted. Only a button inside something that calls itself a cookie, consent or GDPR element is clicked.
-const CONSENT_TEXT = "^(accept( all| cookies| all cookies)?|agree|i agree|got it!?|ok(ay)?|allow( all)?( cookies)?|consent|continue|accepter|akzeptieren|alle akzeptieren|godkend( alle)?|hyväksy( kaikki)?|aceptar( todo)?|accetta( tutto)?|aceitar( todos)?|zgadzam się|accepteren|acceptera( alla)?|godta( alle)?)$";
+const CONSENT_TEXT = "^(accept( all| cookies| all cookies)?|agree|i agree|got it!?|ok(ay)?|allow( all)?( cookies)?|consent|continue|accepter( alle| tout| alt)?|tillad( alle)?( cookies)?|tout accepter|alles accepteren|akzeptieren|alle akzeptieren|godkend( alle)?|hyväksy( kaikki)?|aceptar( todo)?|accetta( tutto)?|aceitar( todos)?|zgadzam się|accepteren|acceptera( alla)?|godta( alle)?)$";
 export async function dismissCookies(page) {
   return page.evaluate((re) => {
     const r = new RegExp(re, "i");
@@ -45,6 +45,10 @@ export async function dismissCookies(page) {
 // A parked or for-sale domain is not a casino: it gets its own status so it does not count as reached.
 export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy|sedo\.com|dan\.com|afternic|hugedomains|domain (has )?expired|make an offer/i;
 export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.slice(0, 3000));
+// Some for-sale pages refuse the scraper (godaddy's says "Access Denied"), so the address itself is also read:
+// a domain marketplace or parking service is not a casino whatever it answers.
+const PARKED_HOST = /(^|\.)(sedo\.com|sedoparking\.com|dan\.com|afternic\.com|hugedomains\.com|parkingcrew\.net|bodis\.com|undeveloped\.com)$|^forsale\.|^parked\./i;
+export const isParkedUrl = (u) => { try { return PARKED_HOST.test(new URL(u).hostname); } catch { return false; } };
 
 // A review or affiliate site is not a casino either. The disclaimer has to be on the lobby itself, and a lobby that
 // links its own terms (a candidate of score 5 or more on the casino's domain) is a casino with an affiliate page.
@@ -86,8 +90,10 @@ export async function readLobby(page) {
   // links vanished from the DOM once the page was scrolled back to the top).
   const lobby = await page.evaluate((clickRe) => {
     const re = new RegExp(clickRe, "i");
-    const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer");
-    const f = document.querySelector("footer, [class*=footer i], #footer");
+    // A cookie banner's own "footer" is not the page's (bet25.dk's consent dialog has one and the page has none).
+    const inBanner = (el) => !!el.closest("[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i]");
+    const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer") && !inBanner(el);
+    const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
     const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
     const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 80), footer: inFooter(a) }));
     const clickables = [];
