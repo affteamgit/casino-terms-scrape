@@ -1,6 +1,7 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
 import { termsCandidates, registrable } from "./links.mjs";
+import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -79,23 +80,35 @@ const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).
 const TERMS_WORDS = /\bterms?\b|\bconditions?\b|agreement|termos|condi[cç]|\bagb\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden/gi;
 export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
 // `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
-// with only the navigation is stable long before the document itself arrives (NetBet's help pages).
+// with only the navigation is stable long before the document itself arrives (NetBet's help pages). Text that has
+// stopped changing and still does not satisfy it may be in the page but collapsed (SoftSwiss accordions): then the
+// hidden text is read, and used when it is the document.
 export async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
   const t0 = Date.now();
-  let lastLen = -1, wallSince = 0;
+  let lastLen = -1, seenLen = -1, wallSince = 0;
+  const hidden = async (t) => {
+    const h = await page.evaluate(hiddenTextInPage).catch(() => "");
+    return preferHidden(t, h) && !placeholder(h) && want(h) ? h : "";
+  };
   while (Date.now() - t0 < budget) {
     const t = await bodyText(page);
     const head = t.slice(0, 1500);
     // A bot wall that has not cleared in 12 s will not: give up early, the caller moves on.
     if (DOC_WALL.test(head)) { wallSince ||= Date.now(); if (Date.now() - wallSince > 12000) return { ok: false, text: t, note: "wall" }; } else wallSince = 0;
+    const settled = t.length === seenLen;
+    seenLen = t.length;
     if (t.length >= 500 && !DOC_WALL.test(head) && !DOC_LOADING.test(t.slice(0, 400)) && !placeholder(t) && want(t)) {
       if (t.length === lastLen) return { ok: true, text: t };
       lastLen = t.length;
+    } else if (settled && !DOC_WALL.test(head)) {
+      const h = await hidden(t);
+      if (h) return { ok: true, text: h, hidden: true };
     }
     await sleep(1500);
   }
   const t = await bodyText(page);
   const wall = DOC_WALL.test(t.slice(0, 1500));
+  if (!wall) { const h = await hidden(t); if (h) return { ok: true, text: h, hidden: true }; }
   return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
 }
 
@@ -128,7 +141,7 @@ export async function fetchTerms(page, lobby) {
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
     const good = d.ok && (lenient || readsLikeTerms(d.text));
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return { href: page.url(), text: d.text, via: "link", tried };
+    if (good) return { href: page.url(), text: d.text, via: "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
     return null;
   };
@@ -153,7 +166,7 @@ export async function fetchTerms(page, lobby) {
       const d = await readDoc(page, 15000, readsLikeTerms);
       const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
       dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      if ((navigated ? d.ok : grew) && readsLikeTerms(d.text)) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", tried };
+      if ((navigated ? d.ok : grew) && readsLikeTerms(d.text)) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
       tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
     } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
   }
@@ -198,7 +211,7 @@ export async function fetchTerms(page, lobby) {
     // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
     const looksLikeTerms = d.ok && readsLikeTerms(d.text) && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300);
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", tried };
+    if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
   }
   tried.push(`${guesses.length} sitemap/guessed paths`);
   for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c, true); if (r) return { ...r, via: "promo-terms" }; }

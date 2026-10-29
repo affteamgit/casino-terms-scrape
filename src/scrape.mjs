@@ -168,7 +168,7 @@ async function attempt(job, url, country, type) {
     }
     const docs = [{ label: "footer", text: lobby.footer }];
     const terms = await fetchTerms(page, lobby);
-    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}`, text: terms.text.slice(0, 250000) });
+    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}`, text: terms.text.slice(0, 250000) });
     for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
       try {
         await page.goto(p.href, { waitUntil: "domcontentloaded", timeout: 45000 });
