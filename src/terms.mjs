@@ -133,15 +133,22 @@ export function notCasino(text, cands, pageUrl) {
 // The words of a promotion's terms: a bonus, a campaign, wagering, free spins (with the Nordic words the exit sees).
 export const PROMO_OPENING = /bonus|promotion|\bpromo\b|campaign|wager|free ?spins?|welcome (offer|package)|cashback|reload|tournament|kampanj|omsetningskrav|gratisspinn/i;
 /**
- * May a document opened in place (a modal, a tab) be accepted on the terms pattern alone? Only when its heading (the
- * short lines, 80 chars or less, among its first five) names the general terms and no promotion, and its first 300
- * characters hold fewer than two distinct promotion words. Anything else (a "Cash Race" or "Spooky Friday" modal, a
- * "Terms and Conditions" heading over a bonus's terms, no heading at all) is for Jev's page judgment only.
+ * May a document opened in place (a modal, a tab) be accepted on the terms pattern alone? Only when the first short
+ * line (80 chars or less, among its first five) that is not UI noise names the general terms and no promotion, and its
+ * first 300 characters hold fewer than two distinct promotion words. Noise is a line whose words are all without
+ * letters (×, a date) or known UI words (Close, New, Menu), or an update stamp. Anything else (a "Cash Race" or "Spooky Friday" modal, even with
+ * a "Terms and conditions" sub-heading; no heading at all; a bonus's terms under a terms heading) is for Jev only.
  */
+const UI_WORD = /^(x|close|lukk|stäng|sulje|luk|schließen|fermer|cerrar|chiudi|fechar|back|tilbake|new|ny|nytt|uusi|neu|menu|share|print|download)$/i;
+const UPDATE_STAMP = /^((last )?updated?|sist oppdatert|version)\b/i;
+// Read as letter runs: two buttons render as "×Close" with no space between them.
+const noise = (l) => UPDATE_STAMP.test(l) || l.split(/[^\p{L}]+/u).filter(Boolean).every((w) => UI_WORD.test(w));
 export function fastInPlace(doc) {
-  const heading = doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).filter((l) => l.length <= 80).join(" ");
-  const promoWords = new Set((doc.slice(0, 300).match(new RegExp(PROMO_OPENING.source, "gi")) || []).map((w) => w.toLowerCase().replace(/\s+/g, " ")));
-  return TERMS_TEXT.test(heading) && !PROMO_OPENING.test(heading) && promoWords.size < 2;
+  const lines = doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).filter((l) => l.length <= 80);
+  const title = lines.find((l) => !noise(l));
+  // Singular and plural are one word ("free spin", "free spins").
+  const promoWords = new Set((doc.slice(0, 300).match(new RegExp(PROMO_OPENING.source, "gi")) || []).map((w) => w.toLowerCase().replace(/\s+/g, " ").replace(/s$/, "")));
+  return !!title && TERMS_TEXT.test(title) && !PROMO_OPENING.test(title) && promoWords.size < 2;
 }
 /** The lines a click added to a page: what an in-place document (a modal, a tab) holds, without the page around it. */
 export function addedText(after, before) {

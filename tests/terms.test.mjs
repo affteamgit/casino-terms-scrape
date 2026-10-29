@@ -393,6 +393,11 @@ test("fastInPlace: an in-place document is fast-accepted only under a general-te
   assert.equal(fastInPlace(`SPOOKY FRIDAY\n50 % FREDAGSBONUS\nVilkår og betingelser\n${body}`), false, "a promo word in the heading");
   assert.equal(fastInPlace(`Terms and Conditions\nThe welcome bonus of 150% carries a 35x wagering requirement; free spins expire in 7 days.`), false, "terms heading over a bonus's terms");
   assert.equal(fastInPlace(""), false, "no heading");
+  assert.equal(fastInPlace(`Cash Race\nPrize pool €10,000\nTerms and conditions\n${body}`), false, "a terms sub-heading under a promotion's title");
+  assert.equal(fastInPlace(`Spooky Friday\nTerms and conditions\n${body}`), false, "a short promotion title before the terms line");
+  assert.equal(fastInPlace(`Close\nLast updated 12.10.2026\nTerms of Service\n${body}`), true, "UI noise and an update date before the title");
+  assert.equal(fastInPlace(`×Close\nGeneral Terms and Conditions\n${body}`), true, "two buttons rendered without a space");
+  assert.equal(fastInPlace(`General Terms and Conditions\nThese terms cover your account. Free spin offers and free spins winnings follow the general rules.`), true, "'free spin' and 'free spins' are one promotion word");
   assert.equal(fastInPlace(`${"These terms govern your account with the operator. ".repeat(3)}\n${"Deposits and withdrawals are processed daily. ".repeat(3)}`), false, "no short heading line");
 });
 
