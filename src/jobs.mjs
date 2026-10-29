@@ -30,6 +30,11 @@ if (perRow) {
   }
 } else {
   const casinos = JSON.parse(readFileSync("input/casinos.json", "utf8"));
+  // CasinoGuru and LCB links were already followed to their landing URL by src/resolve.mjs (input/resolved.json);
+  // starting there saves the two sessions a tracker hop costs through the proxy (the proxy refuses the tracker's
+  // domain, so the redirect had to be resolved in a third session). AskGamblers links cannot be resolved that way
+  // and are still opened as tracking links.
+  const resolved = existsSync("input/resolved.json") ? JSON.parse(readFileSync("input/resolved.json", "utf8")) : {};
   // --limit-per-source N keeps the first N casinos that have a row on each source (so a pilot still covers all three).
   const picked = limit ? ["askgamblers", "casinoguru", "lcb"].flatMap((s) => casinos.filter((c) => c.sources.includes(s)).slice(0, limit)) : casinos;
   const seen = new Set();
@@ -37,10 +42,11 @@ if (perRow) {
     if (seen.has(c.key)) continue;
     seen.add(c.key);
     const domain = c.domains[0] ? `https://${c.domains[0]}/` : "";
-    jobs.push({ id: c.start_row, key: c.key, source: c.sources.join("+"), casino: c.casino, review_url: "", tracking_link: c.start_type === "tracking" ? c.start_url : "", domain, start_url: c.start_url, start_type: c.start_type, rows: c.rows });
+    const landing = c.start_type === "tracking" && resolved[c.start_url] && resolved[c.start_url].domain && !resolved[c.start_url].on_tracker ? resolved[c.start_url].final : "";
+    jobs.push({ id: c.start_row, key: c.key, source: c.sources.join("+"), casino: c.casino, review_url: "", tracking_link: c.start_type === "tracking" ? c.start_url : "", domain, start_url: landing || c.start_url, start_type: landing ? "resolved" : c.start_type, rows: c.rows });
   }
 }
 mkdirSync("out", { recursive: true });
 writeFileSync("out/jobs.json", JSON.stringify(jobs, null, 1));
 const count = (k) => jobs.filter((j) => j.start_type === k).length;
-console.log(`${jobs.length} jobs (${perRow ? "one per row" : "one per casino"}): ${count("tracking")} via tracking link, ${count("domain")} via domain, ${count("none")} with no usable URL`);
+console.log(`${jobs.length} jobs (${perRow ? "one per row" : "one per casino"}): ${count("resolved")} via the tracking link's resolved landing URL, ${count("tracking")} via tracking link, ${count("domain")} via domain, ${count("none")} with no usable URL`);

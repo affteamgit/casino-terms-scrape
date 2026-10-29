@@ -66,13 +66,13 @@ function wsUrl(country, type = "residential") {
  * sessions), so wait and try again rather than fail the row.
  */
 async function connect(country, type) {
-  let delay = 15000;
+  let delay = 4000;
   for (let i = 0; ; i++) {
     try { return await chromium.connectOverCDP(wsUrl(country, type), { timeout: 45000 }); }
     catch (e) {
-      if (!/429|Too Many Requests/.test(e.message) || i >= 5) throw e;
-      await sleep(delay + Math.random() * 5000);
-      delay = Math.min(delay * 2, 120000);
+      if (!/429|Too Many Requests/.test(e.message) || i >= 8) throw e;
+      await sleep(delay + Math.random() * 3000);
+      delay = Math.min(delay * 2, 30000);
     }
   }
 }
@@ -95,8 +95,10 @@ async function bodyText(page) {
   return page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
 }
 
-async function settle(page) {
+// A bare 403/451 is the casino's answer, not a page still loading: it is read once, without the idle and challenge waits.
+async function settle(page, httpStatus = 0) {
   await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+  if (httpStatus === 403 || httpStatus === 451) { const t = await bodyText(page); if (!CHALLENGE_TEXT.test(t.slice(0, 2000))) return t; }
   await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => {});
   for (let i = 0; i < 3; i++) {
     const t = await bodyText(page);
@@ -122,6 +124,7 @@ async function whereAmI(context) {
 const BLOCK_PATTERNS = [
   "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.avif*", "*.svg*", "*.ico*", "*.mp4*", "*.webm*", "*.m3u8*", "*.mp3*", "*.ogg*",
   "*.woff*", "*.ttf*", "*.otf*", "*/images/*", "*/img/*", "*/thumbnails/*", "*/thumbs/*", "*/videos/*",
+  "*.riv*", "*.wasm*", "*.glb*", "*.gltf*", "*.hdr*", "*lottie*", "*progressive-jackpot*", "*/feeds/*", "*jackpot*feed*", "*/sw.js*",
   "*google-analytics*", "*googletagmanager*", "*doubleclick*", "*facebook.net*", "*facebook.com/tr*", "*hotjar*", "*clarity.ms*", "*intercom*",
   "*livechatinc*", "*zendesk*", "*tawk.to*", "*sentry.io*", "*segment.io*", "*segment.com*", "*mixpanel*", "*amplitude*", "*optimizely*",
   "*onesignal*", "*pusher*", "*youtube*", "*vimeo*", "*comm100*", "*cookiebot*", "*posthog*", "*smartlook*", "*fullstory*", "*freshchat*", "*crisp.chat*",
@@ -133,6 +136,8 @@ async function installBlocklist(page) {
     await cdp.send("Network.enable");
     await cdp.send("Network.setBlockedURLs", { urls: BLOCK_PATTERNS });
     cdp.on("Network.loadingFinished", (e) => { meter.bytes += e.encodedDataLength || 0; });
+    // Live-bet and jackpot tickers stream over WebSockets for as long as the session lives; count their frames too.
+    cdp.on("Network.webSocketFrameReceived", (e) => { meter.bytes += (e.response?.payloadData || "").length; meter.ws = (meter.ws || 0) + (e.response?.payloadData || "").length; });
   } catch { /* an older Browserless build without the domain: run unblocked */ }
   return meter;
 }
@@ -211,6 +216,16 @@ async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
   return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
 }
 
+/** Clicks what looks like a collapsed section header; returns how many were opened. */
+async function expandSections(page) {
+  return page.evaluate(() => {
+    const els = [...document.querySelectorAll('[aria-expanded="false"], details:not([open]) > summary, [class*="accordion" i] [class*="header" i], [class*="accordion" i] [class*="title" i], [class*="collaps" i] [class*="header" i], [class*="collaps" i] [class*="title" i]')]
+      .filter((el) => el.offsetParent !== null && (el.innerText || "").trim().length < 120 && !el.closest("nav, header, footer, [class*=menu i], [class*=cookie i]"));
+    for (const el of els.slice(0, 60)) { try { el.click(); } catch { /* not clickable */ } }
+    return els.length;
+  }).catch(() => 0);
+}
+
 /**
  * Opens the casino's terms, in this order: anchors that score as the general terms (up to three); for apps whose
  * footer routes from plain elements, a click on the element that reads like the terms link; the sitemap and the
@@ -224,7 +239,10 @@ async function fetchTerms(page, lobby) {
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   const tryLink = async (c, lenient = false) => {
     try { await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
-    const d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    let d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
+    // collapsed section and read again.
+    if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
     const good = d.ok && (lenient || readsLikeTerms(d.text));
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return { href: page.url(), text: d.text, via: "link", tried };
@@ -319,14 +337,15 @@ async function attempt(job, url, country, type) {
       const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
       httpStatus = resp ? resp.status() : 0;
     } catch (e) { return { status: "load_error", error: clip(e.message, 200), chain }; }
-    const text = await settle(page);
+    const text = await settle(page, httpStatus);
     const finalUrl = page.url();
-    const { ip, ip_country } = await whereAmI(context);
     if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) status = "challenge";
     else if (BLOCK_TEXT.test(text.slice(0, 5000))) status = "geo_blocked"; // the page says so
     else if (httpStatus === 403 || httpStatus === 451) status = "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
     else if (TRACKER_HOSTS.test(host(finalUrl))) status = "stuck_on_tracker";
     else if (httpStatus >= 400 || text.length < 200) status = "dead_or_empty";
+    // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
+    const { ip, ip_country } = status === "ok" ? await whereAmI(context) : { ip: "", ip_country: "" };
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
 
@@ -354,14 +373,14 @@ async function attempt(job, url, country, type) {
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
     return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576 };
-  } finally { await browser.close().catch(() => {}); }
+  } finally { await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
 async function run(job) {
   const row = { id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, start_type: job.start_type, start_url: job.start_url, scraped_at: new Date().toISOString() };
   if (!job.start_url) return { ...row, status: "no_url" };
   const urls = [job.start_url];
-  if (job.start_type === "tracking" && job.domain) urls.push(job.domain);
+  if ((job.start_type === "tracking" || job.start_type === "resolved") && job.domain && !job.start_url.includes(host(job.domain))) urls.push(job.domain);
   const tried = [];
   let r = { status: "not_run" };
   let resolved = "";
@@ -377,6 +396,7 @@ async function run(job) {
     const tag = (c) => `${phase.type === "datacenter" ? "dc-" : ""}${c}`;
     let walls = 0;
     for (const c of phase.countries) {
+      if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
       mbTotal += r.mb || 0;
@@ -434,14 +454,25 @@ async function run(job) {
 }
 
 let next = 0, n = 0;
+// A CDP call on a session Browserless has killed (ten-minute cap) can hang forever; with every worker stuck that way
+// Node finds nothing left to run and exits with code 13 (shard 1 of the first full run). The keepalive timer holds
+// the process, and a casino that exceeds its budget is written as "timeout" while its worker moves on.
+const CASINO_BUDGET = 20 * 60000;
+const keepalive = setInterval(() => {}, 60000);
 async function worker() {
   while (next < jobs.length && Date.now() < DEADLINE) {
     const job = jobs[next++];
     const t0 = Date.now();
-    const row = await run(job).catch((e) => ({ id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, status: "crash", error: clip(e.message, 200), scraped_at: new Date().toISOString() }));
+    const base = { id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, scraped_at: new Date().toISOString() };
+    const row = await Promise.race([
+      run(job).catch((e) => ({ ...base, status: "crash", error: clip(e.message, 200) })),
+      sleep(CASINO_BUDGET).then(() => ({ ...base, status: "timeout", error: `no result within ${CASINO_BUDGET / 60000} min` })),
+    ]);
     appendFileSync(OUT, stringify([COLUMNS.map((c) => row[c] ?? "")]));
     console.log(`[${++n}/${jobs.length}] ${job.id} ${job.casino} -> ${row.status} ${row.final_domain || ""} ${row.exit_country || ""} ${Math.round((Date.now() - t0) / 1000)}s ${row.mb || 0}MB`);
   }
 }
 await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+clearInterval(keepalive);
 if (next < jobs.length) console.log(`deadline reached: ${jobs.length - next} casinos of this shard not started; run again with previous_run_id to continue`);
+process.exit(0); // hung sessions from timed-out casinos must not keep the shard alive
