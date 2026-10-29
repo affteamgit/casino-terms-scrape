@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, MAX_ENTRIES } from "../src/jev.mjs";
+import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, jevEnabled, MAX_ENTRIES } from "../src/jev.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 const betico = {
@@ -128,4 +128,14 @@ test("askJev: null without a key; retries one 429; returns the answers; throws o
   }
   await assert.rejects(askJev({}, {}, { fetchFn: async () => ({ status: 500, ok: false, headers: new Headers(), text: async () => "boom" }) }), /jev http 500/);
   delete process.env.TYPESAFE_API_KEY;
+});
+
+test("jevEnabled follows the key", () => {
+  const saved = process.env.TYPESAFE_API_KEY;
+  try {
+    process.env.TYPESAFE_API_KEY = "";
+    assert.equal(jevEnabled(), false);
+    process.env.TYPESAFE_API_KEY = "k";
+    assert.equal(jevEnabled(), true);
+  } finally { if (saved === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = saved; }
 });

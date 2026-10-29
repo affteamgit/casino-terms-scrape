@@ -3,7 +3,7 @@
 import { termsCandidates, registrable, isPdf } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
-import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
+import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -136,38 +136,46 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
   // The page read validates every candidate, so a wrong pick costs one page load; no key or an error changes nothing.
-  // "off" is noted once however many questions went unasked.
+  // "off" is noted once however many questions went unasked. After one failed call Jev is treated as down for the
+  // rest of this casino: an outage would otherwise cost the call's timeout on every page judged.
+  let jevDown = false;
   const note = (s) => { if (s !== "off" || !jev.notes.includes("off")) jev.notes.push(s); };
+  const failed = (e) => { if (!jevDown) note(`error:${clip(e.message, 60)}`); jevDown = true; };
   const entries = linkEntries(lobby);
   let picks = [];
+  let asked = false;
   if (entries.length) {
     try {
       const q = termsLinkQuestions(entries);
       const answers = await askJev(q.state, q.questions);
       picks = jevPicks(answers, entries);
       note(linkSummary(answers));
-    } catch (e) { note(`error:${clip(e.message, 60)}`); }
+      asked = true;
+    } catch (e) { failed(e); asked = true; }
   }
+  if (!entries.length && !jevEnabled()) note("off"); // nothing to ask about, and no key either
   const jevLinks = picks.filter((p) => p.kind === "link").map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true }));
   cands = [...jevLinks, ...cands.filter((c) => !jevLinks.some((j) => j.href === c.href))];
   const jevTexts = picks.filter((p) => p.kind === "text").map((p) => p.text);
   lobby = { ...lobby, clickables: [...lobby.clickables.filter((c) => jevTexts.includes(c.text)), ...lobby.clickables.filter((c) => !jevTexts.includes(c.text))] };
-  dbg("jev", jev.notes[jev.notes.length - 1] || "off", "picks:", picks.map((p) => `${p.p.toFixed(2)} ${p.kind} "${p.text}" ${p.href}`).join(" | "));
+  dbg("jev", asked ? jev.notes[jev.notes.length - 1] : "not asked", "picks:", picks.map((p) => `${p.p.toFixed(2)} ${p.kind} "${p.text}" ${p.href}`).join(" | "));
   // Pages Jev has judged in this search, by URL: a candidate is judged once.
   const judged = new Map();
   const isTermsPage = async (text, meta) => {
     if (readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
-    if (text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
-    if (!judged.has(meta.url)) judged.set(meta.url, (async () => {
+    if (jevDown || text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
+    // Keyed on the text's length too: an in-place click leaves the URL at the lobby's, and each opens a different document.
+    const jk = `${meta.url}|${text.length}`;
+    if (!judged.has(jk)) judged.set(jk, (async () => {
       try {
         const q = termsPageQuestion({ ...meta, text });
         const answers = await askJev(q.state, q.questions);
         note(pageSummary(answers));
         dbg("jev page", meta.url, pageSummary(answers));
         return acceptsPage(answers);
-      } catch (e) { note(`error:${clip(e.message, 60)}`); return false; }
+      } catch (e) { failed(e); return false; }
     })());
-    return judged.get(meta.url);
+    return judged.get(jk);
   };
   const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));

@@ -10,6 +10,8 @@ export const MAX_ENTRIES = 60;
 const PAGE_TEXT_CHARS = 6000;
 
 const key = () => process.env.TYPESAFE_API_KEY || "";
+/** Whether there is a key: without one every question is skipped and the `jev` column reads `off`. */
+export const jevEnabled = () => !!key();
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 const path = (u) => { try { const x = new URL(u); return x.pathname + x.search; } catch { return u; } };
 const slug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
