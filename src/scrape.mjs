@@ -11,17 +11,21 @@ import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTer
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
 const SHARDS = Number(arg("--shards", 1));
-const CONCURRENCY = Number(arg("--concurrency", 2));
 const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",")) : null;
+const FORCE = process.argv.includes("--force"); // with --ids: run them even when a previous result exists
 const DEADLINE = Number(arg("--deadline-minutes", 0)) > 0 ? Date.now() + Number(arg("--deadline-minutes")) * 60000 : Infinity; // no new casino is started after this
 const TOKEN = process.env.BROWSERLESS_TOKEN;
 const REGION = process.env.BROWSERLESS_REGION || "production-sfo";
-// Exits are tried in phases: the datacenter proxy first (2 units per MB, and it tunnels to domains the residential
-// one refuses, such as bitstarz.com), then the residential proxy (6 units per MB) for casinos that block hosting IPs
-// (PlayGrand, Rokubet, BangaWin in the test set). Each phase lists its exit countries.
+// Exits are tried in phases. "local:no" launches the installed Chrome on this machine (the VPN decides the country;
+// the code is only a label for the rows); "datacenter:ca,de" is Browserless's datacenter proxy (2 units per MB, and
+// it tunnels to domains the residential one refuses, such as bitstarz.com); "residential:..." its residential proxy
+// (6 units per MB) for casinos that block hosting IPs (PlayGrand, Rokubet, BangaWin in the test set).
 const PROXY_PLAN = (process.env.PROXY_PLAN || `datacenter:ca,de;residential:${process.env.EXIT_COUNTRIES || "ca,de,nz,fi,ie,br,jp,in"}`)
   .split(";").filter(Boolean).map((ph) => { const [type, list] = ph.split(":"); return { type: type.trim(), countries: list.split(",").map((c) => c.trim()).filter(Boolean) }; });
-if (!TOKEN) throw new Error("BROWSERLESS_TOKEN is not set");
+const LOCAL = PROXY_PLAN.some((p) => p.type === "local");
+const LOCAL_HEADLESS = (process.env.LOCAL_HEADLESS || "true") !== "false";
+const CONCURRENCY = Number(arg("--concurrency", LOCAL ? 6 : 2));
+if (!TOKEN && !PROXY_PLAN.every((p) => p.type === "local")) throw new Error("BROWSERLESS_TOKEN is not set");
 
 const OUT = `out/results/shard-${SHARD}.csv`;
 mkdirSync("out/results", { recursive: true });
@@ -41,7 +45,7 @@ else writeFileSync(OUT, stringify([COLUMNS]));
 if (existsSync("out/results.csv")) idsIn("out/results.csv");
 
 const all = JSON.parse(readFileSync("out/jobs.json", "utf8"));
-const jobs = all.filter((j, i) => i % SHARDS === SHARD && !done.has(j.id) && (!IDS || IDS.has(j.id)));
+const jobs = all.filter((j, i) => i % SHARDS === SHARD && (!done.has(j.id) || (FORCE && IDS)) && (!IDS || IDS.has(j.id)));
 console.log(`shard ${SHARD}/${SHARDS}: ${jobs.length} jobs to run (${done.size} already done)`);
 
 const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
@@ -58,10 +62,12 @@ function wsUrl(country, type = "residential") {
 }
 
 /**
- * Opens a Browserless session. A 429 means the plan's concurrent-session limit is full (other shards hold the
- * sessions), so wait and try again rather than fail the row.
+ * Opens a browser session: the installed Chrome for the local phase, otherwise Browserless. A 429 from Browserless
+ * means the plan's concurrent-session limit is full (other shards hold the sessions), so wait and try again rather
+ * than fail the row.
  */
 async function connect(country, type) {
+  if (type === "local") return chromium.launch({ channel: "chrome", headless: LOCAL_HEADLESS, args: ["--disable-blink-features=AutomationControlled"] });
   let delay = 4000;
   for (let i = 0; ; i++) {
     try { return await chromium.connectOverCDP(wsUrl(country, type), { timeout: 45000 }); }
@@ -75,7 +81,7 @@ async function connect(country, type) {
 
 /** Follows a tracking link without a proxy and returns the casino URL it lands on, or "" when it stays on the tracker. */
 async function resolveDirect(url) {
-  const browser = await connect("direct");
+  const browser = LOCAL ? await connect("local", "local") : await connect("direct");
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
@@ -191,7 +197,7 @@ async function run(job) {
     // The datacenter phase is a cheap first try: a casino that blocked it through the resolved link gets the bare
     // domain only in the residential phase.
     if (phase.type === "datacenter" && u > 0 && url !== resolved) continue;
-    const tag = (c) => `${phase.type === "datacenter" ? "dc-" : ""}${c}`;
+    const tag = (c) => `${phase.type === "datacenter" ? "dc-" : phase.type === "local" ? "local-" : ""}${c}`;
     let walls = 0;
     for (const c of phase.countries) {
       if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
@@ -249,6 +255,13 @@ async function run(job) {
     writeFileSync(`out/text/${job.id}.txt`, r.docs.map((d) => `===== ${d.label}\n${d.text}`).join("\n\n"));
   }
   return row;
+}
+
+// Where a local run leaves from, for the log: the VPN should be on, but the run goes on either way.
+if (LOCAL && jobs.length) {
+  const b = await connect("local", "local");
+  try { const { ip, ip_country } = await whereAmI(await b.newContext()); console.log(`local Chrome leaves from ${ip || "?"} (${ip_country || "unknown"}); the plan says ${PROXY_PLAN.find((p) => p.type === "local").countries.join("/")}`); }
+  finally { await b.close().catch(() => {}); }
 }
 
 let next = 0, n = 0;

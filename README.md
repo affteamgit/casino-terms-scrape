@@ -90,13 +90,24 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.
 
-## Locally
+## Locally (the first pass)
+
+The full set is scraped from a Mac through the installed Google Chrome, with the VPN on. Put the keys in `.env`
+(gitignored):
+
+```
+PROXY_PLAN=local:no
+TYPESAFE_API_KEY=...
+BROWSERLESS_TOKEN=...        # only needed for a plan with a Browserless phase, or for src/diagnose.mjs
+```
 
 ```
 npm install
-node src/jobs.mjs --limit-per-source 2
-BROWSERLESS_TOKEN=... node src/scrape.mjs --concurrency 2
-node src/merge.mjs
+node src/jobs.mjs                                    # out/jobs.json, one job per casino
+node --env-file=.env src/scrape.mjs --concurrency 6  # out/results/shard-0.csv; stop and re-run to continue
+node src/merge.mjs                                   # out/results.csv, out/results-by-row.csv
 ```
 
-Results land in `out/`. A re-run skips rows already in the shard's CSV.
+`PROXY_PLAN=local:no` tries every casino through the local Chrome once (the country code is a label for the rows;
+the VPN decides the real exit, which the log prints at start). `LOCAL_HEADLESS=false` shows the browser windows.
+`--ids id1,id2 --force` re-runs casinos that already have a result.
