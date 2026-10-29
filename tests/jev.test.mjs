@@ -48,6 +48,20 @@ test("jevPicks: confident answers give up to two picks, best first; a low Noul o
   assert.deepEqual(picks.map((p) => p.text), ["Terms of Service", "Sports Betting Rules"]);
   assert.equal(picks[0].p, 0.7);
   assert.deepEqual(jevPicks({ has_terms: { noul: 0.4 }, terms_link: { probabilities: probs } }, e), []);
+  // a missing or non-numeric Noul never passes the gate
+  assert.deepEqual(jevPicks({ has_terms: {}, terms_link: { probabilities: probs } }, e), []);
+  assert.deepEqual(jevPicks({ terms_link: { probabilities: probs } }, e), []);
+  assert.deepEqual(jevPicks({ has_terms: { noul: NaN }, terms_link: { probabilities: probs } }, e), []);
+  // boundaries are inclusive: Noul 0.7 and probability 0.2 pass
+  assert.equal(jevPicks({ has_terms: { noul: 0.7 }, terms_link: { probabilities: probs } }, e).length, 2);
+  assert.equal(jevPicks({ has_terms: { noul: 0.69 }, terms_link: { probabilities: probs } }, e).length, 0);
+  assert.deepEqual(jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { [rules.id]: 0.2 } } }, e).map((p) => p.text), ["Sports Betting Rules"]);
+  assert.deepEqual(jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { [rules.id]: 0.19 } } }, e), []);
+  // at most two picks, even with three options at or above the minimum
+  const three = jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { [rules.id]: 0.3, [terms.id]: 0.4, [privacy.id]: 0.25 } } }, e);
+  assert.deepEqual(three.map((p) => p.text), ["Terms of Service", "Sports Betting Rules"]);
+  // an id that is not an entry does not displace a valid pick
+  assert.deepEqual(jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { ghost: 0.9, ghost2: 0.8, [terms.id]: 0.5, [rules.id]: 0.4 } } }, e).map((p) => p.text), ["Terms of Service", "Sports Betting Rules"]);
   assert.deepEqual(jevPicks(null, e), []);
   assert.deepEqual(jevPicks({ has_terms: { noul: 0.9 }, terms_link: { probabilities: { nope: 1 } } }, e), []);
 });
@@ -56,6 +70,23 @@ test("summaries", () => {
   assert.equal(linkSummary({ has_terms: { noul: 0.934 }, terms_link: { probabilities: { a: 0.81, b: 0.19 } } }), "link:0.93/0.81");
   assert.equal(linkSummary(null), "off");
   assert.equal(pageSummary({ is_terms: { noul: 0.123 } }), "page:0.12");
+  // partial answers never throw
+  assert.equal(linkSummary({}), "link:?/?");
+  assert.equal(linkSummary({ has_terms: { noul: 0.5 } }), "link:0.50/?");
+  assert.equal(linkSummary({ terms_link: { probabilities: { a: 0.4 } } }), "link:?/0.40");
+  assert.equal(pageSummary({}), "page:?");
+  assert.equal(pageSummary({ is_terms: {} }), "page:?");
+});
+
+test("linkEntries: whitespace-only text counts as empty; missing links/clickables are tolerated", () => {
+  const e = linkEntries({ url: "https://x.com/", links: [L("   ", "https://x.com/logo", true), L("Terms", "https://x.com/terms", true)] });
+  assert.deepEqual(e.map((x) => x.text), ["Terms"]);
+  assert.deepEqual(linkEntries({ url: "https://x.com/" }), []);
+  assert.deepEqual(linkEntries({ url: "https://x.com/", clickables: [{ text: " ", footer: true }] }), []);
+});
+
+test("termsLinkQuestions: no entries means no question (a Choice needs options)", () => {
+  assert.equal(termsLinkQuestions([]), null);
 });
 
 test("termsPageQuestion caps the text and headings; acceptsPage applies the threshold", () => {
@@ -83,6 +114,18 @@ test("askJev: null without a key; retries one 429; returns the answers; throws o
   assert.equal(calls.length, 2);
   assert.equal(calls[1].init.headers.authorization, "Bearer test-key");
   assert.equal(JSON.parse(calls[1].init.body).model, "jev-1.14.0");
+  // a second 429 is not retried again
+  let n429 = 0;
+  await assert.rejects(askJev({}, {}, { fetchFn: async () => { n429++; return { status: 429, ok: false, headers: new Headers({ "retry-after": "0" }), text: async () => "slow" }; } }), /jev http 429/);
+  assert.equal(n429, 2);
+  // retry-after is honoured
+  let t0 = 0, gap = 0, k = 0;
+  await askJev({}, {}, { fetchFn: async () => { if (k++ === 0) { t0 = Date.now(); return { status: 429, ok: false, headers: new Headers({ "retry-after": "1" }), text: async () => "" }; } gap = Date.now() - t0; return { status: 200, ok: true, headers: new Headers(), json: async () => ({ answers: {} }) }; } });
+  assert.ok(gap >= 900, `waited ${gap}ms`);
+  // a 200 without an answers object is a failure, not undefined
+  for (const body of [{}, { answers: null }, { answers: "x" }, null]) {
+    await assert.rejects(askJev({}, {}, { fetchFn: async () => ({ status: 200, ok: true, headers: new Headers(), json: async () => body }) }), /malformed response/);
+  }
   await assert.rejects(askJev({}, {}, { fetchFn: async () => ({ status: 500, ok: false, headers: new Headers(), text: async () => "boom" }) }), /jev http 500/);
   delete process.env.TYPESAFE_API_KEY;
 });

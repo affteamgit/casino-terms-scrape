@@ -26,7 +26,9 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fe
       continue;
     }
     if (!res.ok) throw new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
-    return (await res.json()).answers;
+    const body = await res.json();
+    if (!body || typeof body.answers !== "object" || body.answers === null) throw new Error("jev: malformed response");
+    return body.answers;
   }
 }
 
@@ -38,23 +40,26 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fe
  */
 export function linkEntries(lobby) {
   const seen = new Set(), out = [];
-  const legal = (l) => LEGAL.test(l.text + " " + path(l.href));
-  const add = (text, href, footer, kind) => {
+  const links = lobby?.links || [], clickables = lobby?.clickables || [];
+  const legal = (l) => LEGAL.test(`${l.text || ""} ${path(l.href)}`);
+  const add = (rawText, href, footer, kind) => {
+    const text = clip(rawText, 60);
     const k = href || `text:${text}`;
     if (seen.has(k) || out.length >= MAX_ENTRIES) return;
-    if (!text && !LEGAL.test(path(href))) return;
+    if (!text && !(href && LEGAL.test(path(href)))) return;
     seen.add(k);
-    out.push({ id: `${slug(text) || slug(path(href)) || "link"}_${out.length}`, text: clip(text, 60), href: href || "", in_footer: !!footer, kind });
+    out.push({ id: `${slug(text) || slug(path(href)) || "link"}_${out.length}`, text, href: href || "", in_footer: !!footer, kind });
   };
-  for (const l of lobby.links) if (l.footer && legal(l)) add(l.text, l.href, true, "link");
-  for (const c of lobby.clickables) add(c.text, "", c.footer, "text");
-  for (const l of lobby.links) if (!l.footer && legal(l)) add(l.text, l.href, false, "link");
-  for (const l of lobby.links) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
+  for (const l of links) if (l.footer && legal(l)) add(l.text, l.href, true, "link");
+  for (const c of clickables) add(c.text, "", c.footer, "text");
+  for (const l of links) if (!l.footer && legal(l)) add(l.text, l.href, false, "link");
+  for (const l of links) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
   return out;
 }
 
-/** The footer judgment: is there a general-terms link, and which entry is it. */
+/** The footer judgment: is there a general-terms link, and which entry is it. Returns null when there are no entries (a Choice needs options), so callers skip the call. */
 export function termsLinkQuestions(entries) {
+  if (!entries || !entries.length) return null;
   const describe = (e) => `${e.kind === "text" ? "clickable text" : "link"} "${e.text}"${e.href ? ` to ${clip(path(e.href), 100)}` : ""}${e.in_footer ? ", in the footer" : ""}`;
   return {
     state: { links: entries.map(({ id, text, href, in_footer }) => ({ id, text, href: clip(href, 160), in_footer })) },
@@ -78,12 +83,18 @@ export function termsLinkQuestions(entries) {
 
 /** Jev's picks worth trying, best first: none unless Jev also thinks a terms link exists. */
 export function jevPicks(answers, entries) {
-  if (!answers || !answers.has_terms || !answers.terms_link || answers.has_terms.noul < LINK_NOUL_MIN) return [];
-  return Object.entries(answers.terms_link.probabilities || {}).filter(([, p]) => p >= LINK_PICK_MIN).sort((a, b) => b[1] - a[1]).slice(0, 2)
-    .map(([id, p]) => ({ ...entries.find((e) => e.id === id), p })).filter((e) => e.id);
+  if (!answers || !(answers.has_terms?.noul >= LINK_NOUL_MIN) || !answers.terms_link) return [];
+  return Object.entries(answers.terms_link.probabilities || {}).filter(([, p]) => p >= LINK_PICK_MIN).sort((a, b) => b[1] - a[1])
+    .map(([id, p]) => ({ entry: entries.find((e) => e.id === id), p })).filter((x) => x.entry).slice(0, 2)
+    .map(({ entry, p }) => ({ ...entry, p }));
 }
 
-export const linkSummary = (answers) => answers ? `link:${answers.has_terms.noul.toFixed(2)}/${Math.max(0, ...Object.values(answers.terms_link.probabilities || {})).toFixed(2)}` : "off";
+const fmt = (n) => (typeof n === "number" && Number.isFinite(n) ? n.toFixed(2) : "?");
+export const linkSummary = (answers) => {
+  if (!answers) return "off";
+  const probs = answers.terms_link?.probabilities;
+  return `link:${fmt(answers.has_terms?.noul)}/${probs && typeof probs === "object" ? fmt(Math.max(0, ...Object.values(probs))) : "?"}`;
+};
 
 /** The page judgment: is this document the general terms. The opening of the page and its headings are enough. */
 export function termsPageQuestion({ title, headings, text }) {
@@ -103,4 +114,4 @@ export function termsPageQuestion({ title, headings, text }) {
 }
 
 export const acceptsPage = (answers) => !!answers && !!answers.is_terms && answers.is_terms.noul >= PAGE_NOUL_MIN;
-export const pageSummary = (answers) => answers ? `page:${answers.is_terms.noul.toFixed(2)}` : "off";
+export const pageSummary = (answers) => answers ? `page:${fmt(answers.is_terms?.noul)}` : "off";
