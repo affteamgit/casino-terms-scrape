@@ -38,7 +38,9 @@ export function termsScore(l, pageUrl) {
   if (NOT_TERMS.test(strong ? name : text + " " + name)) return null;
   let s = (inPath ? 5 : 0) + (inText ? 3 : 0);
   if (strong) s += 1; // named as the general terms, ahead of a bare /legal or /rules page
-  if (PRODUCT.test(both)) s -= 3; // a product's terms (poker, sportsbook) rank below the general terms
+  // A product's terms (/poker/terms, /sportsbook/terms) rank below the general terms. Read on the path's directories
+  // only: a caption that names products ("Casino & Sports Terms") or a terms page's own name says nothing about them.
+  if (p.split("/").filter(Boolean).slice(0, -1).some((g) => PRODUCT.test(g.replace(/[-_]/g, " ")))) s -= 3;
   if (PROMO.test(both)) s = Math.min(s - 6, 0); // a promotion's terms never rank as the general terms
   if (l.footer) s += 2;
   if (!own) s -= 3; // a PDF on a file host is the terms only when nothing on the casino's own domain is

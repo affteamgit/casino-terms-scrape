@@ -163,3 +163,9 @@ test("namedTermsPage: a promotion's, product's or VIP directory's terms are not 
     assert.equal(namedTermsPage(`https://x.com/${p}`, page), false, p);
   for (const p of ["en/info/terms-and-conditions", "legal/terms-of-service", "de/terms-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), true, p);
 });
+
+test("a product named in the caption does not demote the general terms ('Casino & Sports Terms')", () => {
+  const c = termsCandidates([L("Terms", "https://x.com/legal", true), L("Casino & Sports Terms", "https://x.com/terms-and-conditions", true)], "https://x.com/");
+  assert.equal(c[0].href, "https://x.com/terms-and-conditions");
+  assert.ok(c[0].score > c[1].score);
+});
