@@ -5,7 +5,8 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
-import { termsCandidates, otherDocs, regionalSites, registrable } from "./links.mjs";
+import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -45,11 +46,6 @@ console.log(`shard ${SHARD}/${SHARDS}: ${jobs.length} jobs to run (${done.size} 
 
 const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
 const BLOCK_TEXT = /not (available|accessible) (in|from) your (country|region|location)|access (is )?(denied|restricted)|restricted (country|region|territor)|can(?:'|no)t access from this country|unavailable in your (country|region)|we do not accept players from|your country is (blocked|restricted)|403 forbidden|error 1020|sorry, you have been blocked/i;
-const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required/i;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
-const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
 function wsUrl(country, type = "residential") {
   // A session may need the lobby, up to three terms candidates, a click, a few guessed paths and two more
@@ -91,23 +87,6 @@ async function resolveDirect(url) {
   } finally { await browser.close().catch(() => {}); }
 }
 
-async function bodyText(page) {
-  return page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-}
-
-// A bare 403/451 is the casino's answer, not a page still loading: it is read once, without the idle and challenge waits.
-async function settle(page, httpStatus = 0) {
-  await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
-  if (httpStatus === 403 || httpStatus === 451) { const t = await bodyText(page); if (!CHALLENGE_TEXT.test(t.slice(0, 2000))) return t; }
-  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => {});
-  for (let i = 0; i < 3; i++) {
-    const t = await bodyText(page);
-    if (!CHALLENGE_TEXT.test(t.slice(0, 2000)) && t.length > 200) return t;
-    await sleep(6000);
-  }
-  return bodyText(page);
-}
-
 async function whereAmI(context) {
   const p = await context.newPage();
   try {
@@ -140,187 +119,6 @@ async function installBlocklist(page) {
     cdp.on("Network.webSocketFrameReceived", (e) => { meter.bytes += (e.response?.payloadData || "").length; meter.ws = (meter.ws || 0) + (e.response?.payloadData || "").length; });
   } catch { /* an older Browserless build without the domain: run unblocked */ }
   return meter;
-}
-
-// Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
-// terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
-// anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
-// instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked.
-const CLICK_TEXT = "terms|conditions|t\\s*&\\s*c|\\btos\\b|user[-\\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\\bagb\\b|r[eè]gles|regulamin";
-async function readLobby(page) {
-  let last = -1, stable = 0;
-  for (let i = 0; i < 10; i++) {
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-    await sleep(3000);
-    const n = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("a[href]")];
-      return { a: links.length, t: links.some((a) => /terms|conditions|t&c/i.test(a.innerText + a.getAttribute("href"))) };
-    }).catch(() => ({ a: 0, t: false }));
-    if (n.t) break;
-    stable = n.a === last && n.a > 10 ? stable + 1 : 0;
-    if (stable >= 2 && i >= 3) break;
-    last = n.a;
-  }
-  // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
-  // links vanished from the DOM once the page was scrolled back to the top).
-  const lobby = await page.evaluate((clickRe) => {
-    const re = new RegExp(clickRe, "i");
-    const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer");
-    const f = document.querySelector("footer, [class*=footer i], #footer");
-    const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
-    const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 80), footer: inFooter(a) }));
-    const clickables = [];
-    for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, li, span, div, p, button")) {
-      const text = (el.innerText || "").trim();
-      if (el.children.length || text.length > 40 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || el.closest("a[href]")) continue;
-      if (clickables.some((c) => c.text === text)) continue;
-      el.setAttribute("data-cts", String(clickables.length));
-      clickables.push({ text, footer: inFooter(el), sel: `[data-cts="${clickables.length}"]` });
-      if (clickables.length >= 6) break;
-    }
-    clickables.sort((a, b) => (b.footer ? 1 : 0) - (a.footer ? 1 : 0));
-    return { url: location.href, footer, links, clickables };
-  }, CLICK_TEXT).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
-  return lobby;
-}
-
-// A terms page is only read once its text has stopped growing: single-page apps show the shell first
-// ("Loading Terms and Conditions…" on BangaWin) and fill the document in later. A WAF or bot-check page is a
-// failure, not a document.
-const DOC_WALL = /WAF Block|Performing security verification|Just a moment|Attention Required|Access Denied|Checking your browser|verify you are human/i;
-const DOC_LOADING = /\bloading\b/i;
-// A page whose first few hundred words are mostly the same token is a font-measurement or skeleton placeholder
-// ("word word word …" on Winoly), not content.
-const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).size < 40;
-// The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
-const TERMS_WORDS = /\bterms?\b|\bconditions?\b|agreement|termos|condi[cç]|\bagb\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden/gi;
-const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
-// `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
-// with only the navigation is stable long before the document itself arrives (NetBet's help pages).
-async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
-  const t0 = Date.now();
-  let lastLen = -1, wallSince = 0;
-  while (Date.now() - t0 < budget) {
-    const t = await bodyText(page);
-    const head = t.slice(0, 1500);
-    // A bot wall that has not cleared in 12 s will not: give up early, the caller moves on.
-    if (DOC_WALL.test(head)) { wallSince ||= Date.now(); if (Date.now() - wallSince > 12000) return { ok: false, text: t, note: "wall" }; } else wallSince = 0;
-    if (t.length >= 500 && !DOC_WALL.test(head) && !DOC_LOADING.test(t.slice(0, 400)) && !placeholder(t) && want(t)) {
-      if (t.length === lastLen) return { ok: true, text: t };
-      lastLen = t.length;
-    }
-    await sleep(1500);
-  }
-  const t = await bodyText(page);
-  const wall = DOC_WALL.test(t.slice(0, 1500));
-  return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
-}
-
-/** Clicks what looks like a collapsed section header; returns how many were opened. */
-async function expandSections(page) {
-  return page.evaluate(() => {
-    const els = [...document.querySelectorAll('[aria-expanded="false"], details:not([open]) > summary, [class*="accordion" i] [class*="header" i], [class*="accordion" i] [class*="title" i], [class*="collaps" i] [class*="header" i], [class*="collaps" i] [class*="title" i]')]
-      .filter((el) => el.offsetParent !== null && (el.innerText || "").trim().length < 120 && !el.closest("nav, header, footer, [class*=menu i], [class*=cookie i]"));
-    for (const el of els.slice(0, 60)) { try { el.click(); } catch { /* not clickable */ } }
-    return els.length;
-  }).catch(() => 0);
-}
-
-/**
- * Opens the casino's terms, in this order: anchors that score as the general terms (up to three); for apps whose
- * footer routes from plain elements, a click on the element that reads like the terms link; the sitemap and the
- * paths casinos commonly use; and last, anchors that scored as a promotion's terms, which are better than nothing.
- * Returns the page's text and URL, and what was tried.
- */
-const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
-async function fetchTerms(page, lobby) {
-  const tried = [];
-  const cands = termsCandidates(lobby.links, lobby.url);
-  dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
-  const tryLink = async (c, lenient = false) => {
-    try { await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
-    let d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
-    // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
-    // collapsed section and read again.
-    if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }
-    const good = d.ok && (lenient || readsLikeTerms(d.text));
-    dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return { href: page.url(), text: d.text, via: "link", tried };
-    tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    return null;
-  };
-  // An affiliate landing carries its tracking parameters into every link (go.netbet.co.uk); the page behind the
-  // clean URL is the one a player reads, so it is tried first.
-  const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
-  for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
-    for (const v of c.href.includes("?") ? [clean(c), c] : [c]) { const r = await tryLink(v); if (r) return r; }
-    // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
-    if (/\(wall\)$/.test(tried[tried.length - 1] || "")) return { href: "", text: "", via: "", tried, walled: true };
-  }
-  for (const c of lobby.clickables.slice(0, 2)) {
-    try {
-      if (page.url() !== lobby.url) { await page.goto(lobby.url, { waitUntil: "domcontentloaded", timeout: 45000 }); await settle(page); lobby = await readLobby(page); }
-      const target = lobby.clickables.find((x) => x.text === c.text);
-      if (!target) { tried.push(`click "${c.text}" (gone)`); continue; }
-      const before = await bodyText(page);
-      // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
-      await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
-      // Either the app navigates, or it opens the document in place.
-      for (let i = 0; i < 8 && page.url() === lobby.url && (await bodyText(page)).length < before.length + 2000; i++) await sleep(1500);
-      const d = await readDoc(page, 15000, readsLikeTerms);
-      const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
-      dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      if ((navigated ? d.ok : grew) && readsLikeTerms(d.text)) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", tried };
-      tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
-    } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
-  }
-  // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
-  // terms): scan it, read-only, when the lobby gave nothing.
-  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && host(l.href).endsWith(registrable(host(lobby.url))) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
-  if (signup) {
-    try {
-      await page.goto(signup.href, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await settle(page);
-      const sub = await readLobby(page);
-      const subCands = termsCandidates(sub.links, lobby.url).filter((c) => c.score > 0).slice(0, 2);
-      dbg("signup page", signup.href, "candidates:", subCands.map((c) => `${c.score} ${c.href}`).join(" | "));
-      for (const c of subCands) { const r = await tryLink(c); if (r) return { ...r, via: "signup-page" }; }
-      if (!subCands.length) tried.push(`signup page ${signup.href} (no terms link)`);
-    } catch (e) { tried.push(`signup page ${signup.href} (${clip(e.message, 60)})`); }
-  }
-  // Casinos always have terms, so keep looking: the site's sitemap, then the paths casinos commonly use, opened in
-  // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
-  const origin = new URL(lobby.url).origin;
-  const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
-  const guesses = [];
-  try {
-    await page.goto(`${origin}/sitemap.xml`, { waitUntil: "domcontentloaded", timeout: 20000 });
-    const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
-    for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
-      if (/terms|conditions|\btos\b|termos|\bagb\b|regulamin/i.test(m[1]) && !/privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game/i.test(m[1])) guesses.push(m[1]);
-      if (guesses.length >= 3) break;
-    }
-  } catch { /* no sitemap */ }
-  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/info/terms-and-conditions", "/user-agreement", "/rules"]) {
-    guesses.push(`${origin}${lang}${p}`);
-    if (lang) guesses.push(`${origin}${p}`);
-  }
-  const lobbyText = (await bodyText(page).catch(() => "")) || "";
-  const guessUntil = Date.now() + 120000; // the whole guessing phase gets two minutes
-  for (const href of [...new Set(guesses)].slice(0, 6)) {
-    if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
-    try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
-    const d = await readDoc(page, 8000, readsLikeTerms);
-    if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
-    // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
-    const looksLikeTerms = d.ok && readsLikeTerms(d.text) && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300);
-    dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", tried };
-  }
-  tried.push(`${guesses.length} sitemap/guessed paths`);
-  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c, true); if (r) return { ...r, via: "promo-terms" }; }
-  if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
-  return { href: "", text: "", via: "", tried };
 }
 
 async function attempt(job, url, country, type) {
