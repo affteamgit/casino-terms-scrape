@@ -120,6 +120,8 @@ async function installBlocklist(page) {
     await cdp.send("Network.setBlockedURLs", { urls: BLOCK_PATTERNS });
     cdp.on("Network.loadingFinished", (e) => { meter.bytes += e.encodedDataLength || 0; });
     // Live-bet and jackpot tickers stream over WebSockets for as long as the session lives; count their frames too.
+    // Lifting the blocklist: a casino app that needs a blocked file to render its terms (see fetchTerms).
+    meter.unblock = async () => { await cdp.send("Network.setBlockedURLs", { urls: [] }); return true; };
     cdp.on("Network.webSocketFrameReceived", (e) => { meter.bytes += (e.response?.payloadData || "").length; meter.ws = (meter.ws || 0) + (e.response?.payloadData || "").length; });
   } catch { /* an older Browserless build without the domain: run unblocked */ }
   return meter;
@@ -181,7 +183,7 @@ async function attempt(job, url, country, type) {
     if (nc) return { ...base, status: "parked", error: `not casino: ${nc}` };
     const docs = [{ label: "footer", text: lobby.footer }];
     const jev = { notes: [] };
-    const terms = await fetchTerms(page, lobby, jev);
+    const terms = await fetchTerms(page, lobby, jev, { unblock: meter.unblock });
     if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.pdf ? " (pdf)" : ""}`, text: terms.text.slice(0, 250000) });
     for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
       try {

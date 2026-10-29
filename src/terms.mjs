@@ -304,7 +304,9 @@ export const sitemapChildren = (locs) => locs.filter((l) => !/product|game|slot|
 export const sitemapTerms = (locs) => locs.filter((l) => TERMS_URL.test(urlPath(l)) && !NOT_TERMS_URL.test(urlPath(l))).slice(0, 4);
 
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
-export async function fetchTerms(page, lobby, jev = { notes: [] }) {
+// `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
+// (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document.
+export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } = {}) {
   const tried = [];
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
@@ -393,6 +395,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     return null;
   };
   let pageWalled = false; // a wall on a candidate page itself; a wall on a document it links to says nothing about the site
+  let unblocked = false;
   const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
   const tryLink = async (c, lenient = false) => {
     visited.add(c.href);
@@ -416,6 +419,12 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
+    // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
+    // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
+    if (unblock && !unblocked && !lenient && !c.english && !hopping && d.note !== "wall" && (c.jev || c.score >= 5)) {
+      unblocked = true;
+      if (await unblock().catch(() => false)) { tried.push(`${c.href} again without the blocklist`); const r = await tryLink(c); if (r) return r; }
+    }
     // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
     return (await hopFrom(d)) || (lenient || c.english ? null : hubFrom(d));
   };
