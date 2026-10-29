@@ -20,6 +20,17 @@ Separately, the run costs Browserless units: 2,608 MB of metered proxy traffic f
 for the full set), plus the ten-minute session cap, 429 concurrency ceiling and casino timeouts the scraper works
 around. 427 of the 620 reached casinos got in through the first exit tried; only ~130 needed another country.
 
+**Result (2026-10-30, local headed Chrome through the Oslo exit, Jev on).** Of the 116 reached-without-terms casinos,
+93 now have their general terms (Jev picks 75, of them 55 read from hidden text; guessed paths and sitemap 8; PDFs 7,
+one through a second hop; a Zendesk section hop, a router-link click and a policy-hub tab one each), 6 turned out not
+to be casinos (parked or for sale, Dan.com listings, review sites), 1 is under maintenance, 11 are not reachable from
+this exit (blocked, geo-blocked, empty, DNS) and go to the Browserless pass, and 5 are left for a decision: the terms
+are not published (epicjack.com), not linked anywhere on the lobby from this exit (betportal.com), behind app
+deep links that redirect home (virginbet.co.za), behind a link that redirects to the lobby from this exit
+(wandando.com), or split into one page per section (starzbet.com). The 30-casino regression sample: every one reached
+has its terms (22) except one whose terms page is now walled from this exit (rapter6.com); 7 are blocked from this
+exit. No challenge pages in any run.
+
 ## Decisions
 
 1. **Local first, Browserless for the rest.** The full set is scraped from the user's Mac through a local Chrome
