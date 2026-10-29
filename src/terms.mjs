@@ -395,11 +395,18 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return null;
   };
   let pageWalled = false; // a wall on a candidate page itself; a wall on a document it links to says nothing about the site
-  // A short page accepted as the terms may be a summary that links the document itself (beef.casino's /terms-use-site:
+  // A short page accepted as the terms may be collapsed, or a summary that links the document itself (beef.casino's /terms-use-site:
   // the opening paragraph and "MEHR LESEN" -> /de/terms-and-conditions). Under 5,000 characters, a link on it to an
   // own-domain page named as the general terms is read too, and the longer document is kept.
+  // Before that, its collapsed sections are opened: jasino.com's terms passed on their section titles alone (2,246 chars).
   const fuller = async (r) => {
     if (hopping || r.pdf || r.text.length >= 5000) return r;
+    if (await expandSections(page)) {
+      const d = await readDoc(page, 10000, readsLikeTerms);
+      dbg("fuller expanded", page.url(), r.text.length, "->", d.text.length, "chars");
+      if (d.ok && readsLikeTerms(d.text) && d.text.length > r.text.length) r = { ...r, text: d.text, hidden: !!d.hidden };
+      if (r.text.length >= 5000) return r;
+    }
     const at = page.url(), bare = (u) => u.replace(/[?#].*$/, "").replace(/\/$/, "");
     const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80) }))).catch(() => []);
     const full = links.find((l) => namedTermsPage(l.href, lobby.url) && bare(l.href) !== bare(at) && !visited.has(l.href));
