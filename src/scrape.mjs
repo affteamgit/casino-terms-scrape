@@ -150,6 +150,16 @@ async function attempt(job, url, country, type) {
 
     // The lobby and its footer; a page that only asks for a country (unibet.com) is followed to the regional site.
     let lobby = await readLobby(page);
+    // A lobby read before its footer rendered (jasino.com: 78 links and no legal footer once, 124 with it the next time)
+    // is read once more after a reload when it gave no terms link and no clickable; the fuller read stands.
+    if (!termsCandidates(lobby.links, lobby.url).length && !lobby.clickables.length) {
+      try {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
+        await settle(page);
+        const again = await readLobby(page);
+        if (termsCandidates(again.links, again.url).length || again.clickables.length || again.links.length > lobby.links.length) lobby = again;
+      } catch { /* the first read stands */ }
+    }
     // A lobby with almost no links did not render (Rokubet via some exits stays a blank shell): let the next country try.
     if (lobby.links.length < 5 && lobby.footer.length < 1500) return { ...base, status: "dead_or_empty", error: "lobby did not render" };
     let lobbyBody = text; // the text of the lobby the terms search will start from
