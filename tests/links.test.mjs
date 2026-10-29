@@ -175,3 +175,13 @@ test("namedTermsPage: directory words are read whole, so /preferences and /permi
   for (const p of ["preferences/terms-and-conditions", "permission/terms-of-use", "help_center/terms-and-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), true, p);
   for (const p of ["promotions/terms-and-conditions", "my_bonus/terms-of-use", "sports-rules/terms-and-conditions", "aml-policy/terms-and-conditions"]) assert.equal(namedTermsPage(`https://x.com/${p}`, page), false, p);
 });
+
+test("a product named in the page's own name ranks below the general terms and /legal", () => {
+  const c = termsCandidates([L("Sportsbook Terms", "https://x.com/sportsbook-terms-and-conditions", true), L("Poker Terms", "https://x.com/poker-terms", true),
+    L("Terms", "https://x.com/legal", true), L("Terms and Conditions", "https://x.com/terms-and-conditions", true)], "https://x.com/");
+  const score = (h) => c.find((l) => l.href === `https://x.com/${h}`).score;
+  for (const p of ["sportsbook-terms-and-conditions", "poker-terms"]) {
+    assert.ok(score(p) < score("terms-and-conditions"), `${p} below the general terms`);
+    assert.ok(score(p) < score("legal"), `${p} below /legal`);
+  }
+});
