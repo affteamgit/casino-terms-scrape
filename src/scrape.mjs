@@ -67,7 +67,7 @@ function wsUrl(country, type = "residential") {
  * than fail the row.
  */
 async function connect(country, type) {
-  if (type === "local") return chromium.launch({ channel: "chrome", headless: LOCAL_HEADLESS, args: ["--disable-blink-features=AutomationControlled"] });
+  if (type === "local") return chromium.launch({ channel: "chrome", headless: LOCAL_HEADLESS, args: ["--disable-blink-features=AutomationControlled", "--lang=en-US"] });
   let delay = 4000;
   for (let i = 0; ; i++) {
     try { return await chromium.connectOverCDP(wsUrl(country, type), { timeout: 45000 }); }
@@ -130,7 +130,7 @@ async function installBlocklist(page) {
 async function attempt(job, url, country, type) {
   const browser = await connect(country, type);
   try {
-    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const context = browser.contexts()[0] ?? (await browser.newContext({ locale: "en-US" }));
     const page = await context.newPage();
     await page.setViewportSize({ width: 1366, height: 900 });
     const meter = await installBlocklist(page);

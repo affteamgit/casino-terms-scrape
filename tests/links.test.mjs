@@ -78,3 +78,11 @@ test("an own-domain footer PDF keeps its full score", () => {
   assert.equal(c.length, 1);
   assert.equal(c[0].score, 10);
 });
+
+test("Nordic link text and /rules: spinit2's \"Vilkår og betingelser\" is the terms; sports betting rules still are not", () => {
+  const spin = termsCandidates([L("Vilkår og betingelser", "https://spinit2.com/no/rules", true)], "https://spinit2.com/no/");
+  assert.deepEqual(spin.map((l) => l.href), ["https://spinit2.com/no/rules"]);
+  assert.deepEqual(termsCandidates([L("Sports Betting Rules", "https://x.com/sports-rules", true)], "https://x.com/"), []);
+  assert.equal(termsCandidates([L("Användarvillkor", "https://x.se/anvandarvillkor", true), L("Käyttöehdot", "https://x.fi/ehdot", true)], "https://x.se/").length, 1);
+  assert.equal(termsCandidates([L("Käyttöehdot", "https://x.fi/info", true)], "https://x.fi/").length, 1);
+});

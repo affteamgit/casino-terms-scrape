@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -24,4 +24,14 @@ test("dismissCookies clicks the banner's accept button, and reports nothing to c
     await page.setContent("<html><body><button>Accept all</button></body></html>");
     assert.equal(await dismissCookies(page), false, "an accept button outside a cookie banner is not clicked");
   } finally { await browser.close(); }
+});
+
+test("englishVariant: a language prefix becomes /en, anything else is left alone", () => {
+  assert.equal(englishVariant("https://spinit2.com/no/rules"), "https://spinit2.com/en/rules");
+  assert.equal(englishVariant("https://x.com/ca/rules"), "", "ca is not a language");
+  assert.equal(englishVariant("https://x.com/pt-br/termos"), "https://x.com/en/termos");
+  assert.equal(englishVariant("https://x.com/terms"), "");
+  assert.equal(englishVariant("https://x.com/de"), "https://x.com/en");
+  assert.equal(englishVariant("https://x.com/no/rules?a=1#top"), "https://x.com/en/rules?a=1#top");
+  assert.equal(englishVariant("not a url"), "");
 });

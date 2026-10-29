@@ -149,6 +149,13 @@ export async function expandSections(page) {
  * paths casinos commonly use; and last, anchors that scored as a promotion's terms, which are better than nothing.
  * Returns the page's text and URL, and what was tried.
  */
+// Locale prefixes the casinos use for their non-English sites. The extraction patterns read English, so a terms
+// page found under one of these is first tried at /en/ (then as found): spinit2.com/no/rules -> spinit2.com/en/rules.
+const NON_ENGLISH = /^\/(no|nb|nn|sv|da|fi|de|fr|es|it|pt|pl|ru|tr|nl|ja|hu|cs|el|ro|bg|hr|sl|sk|lt|lv|et|uk|ar|zh|ko|th|vi|id|hi|ka|kk)(-[a-z]{2})?(?=\/|$)/i;
+export function englishVariant(href) {
+  try { const u = new URL(href); if (!NON_ENGLISH.test(u.pathname)) return ""; u.pathname = u.pathname.replace(NON_ENGLISH, "/en"); return u.href; } catch { return ""; }
+}
+
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   const tried = [];
@@ -239,7 +246,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   // clean URL is the one a player reads, so it is tried first.
   const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
   for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
-    for (const v of c.href.includes("?") ? [clean(c), c] : [c]) { const r = await tryLink(v); if (r) return r; }
+    const en = englishVariant(c.href);
+    for (const v of [...(en ? [{ ...c, href: en }] : []), ...(c.href.includes("?") ? [clean(c), c] : [c])]) { const r = await tryLink(v); if (r) return r; }
     // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
     if (/\(wall\)$/.test(tried[tried.length - 1] || "")) return { href: "", text: "", via: "", tried, walled: true };
   }
@@ -296,6 +304,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
   for (const loc of pools.flat()) { if (TERMS_URL.test(loc) && !NOT_TERMS_URL.test(loc)) guesses.push(loc); if (guesses.length >= 4) break; }
   // The paths casinos commonly use, with the lobby's language prefix and without it.
   for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/terms-of-use", "/terms-conditions", "/general-terms-and-conditions", "/info/terms-and-conditions", "/help/terms-and-conditions", "/legal/terms", "/legal/terms-and-conditions", "/pages/terms-and-conditions", "/page/terms-and-conditions", "/user-agreement", "/rules", "/tc"]) {
+    if (NON_ENGLISH.test(lang)) guesses.push(`${origin}/en${p}`);
     guesses.push(`${origin}${lang}${p}`);
     if (lang) guesses.push(`${origin}${p}`);
   }
