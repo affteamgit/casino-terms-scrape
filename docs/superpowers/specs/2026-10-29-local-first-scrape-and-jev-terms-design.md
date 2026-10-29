@@ -32,6 +32,15 @@ around. 427 of the 620 reached casinos got in through the first exit tried; only
    out (TypeSafe marks image questions as preview, and the text path covers every case seen).
 4. **Fail open to today's behaviour.** No `TYPESAFE_API_KEY`, or an API error, means the terms search runs as it does
    now. Jev adds candidates and acceptances; it never removes them.
+5. **The bar is 100% of reachable casinos.** A casino the scraper can open must come back with its terms. After the
+   change, a row with `status = ok` and `terms_found = no` is a defect: it is probed, the cause is classified and
+   fixed generically where possible, and the run is repeated until every remaining miss is one of: the terms page
+   is bot-walled from this exit (`(wall)` in `terms_tried`, handed to the Browserless pass), or the page reached is
+   not a casino at all (parked or for-sale domains get their own status, `parked`, so they no longer count as
+   reached). Casino-specific oddities that resist a generic rule are listed for the user with the probe output.
+   The same bar applies to the Browserless pass. To give the loop fewer misses to start from, the search also
+   gains breadth: cookie banners are dismissed before the lobby is read, the guessed paths grow from 6 to 12 with
+   a three-minute budget, and sitemap indexes are followed.
 
 ## 1. Local phase
 
@@ -62,9 +71,9 @@ node src/merge.mjs
 
 ### Fallback through Browserless
 
-- `src/retry-ids.mjs <results.csv>` writes `input/retry-ids.txt`: the ids whose `status` is not `ok`, or whose
-  `terms_found` is `no`, one per line, and prints the count by status. Parked domains and dead sites are included;
-  Browserless settles them cheaply, since a blocked attempt costs seconds.
+- `src/retry-ids.mjs <results.csv>` writes `input/retry-ids.txt`: the ids whose `status` is not `ok` (`no_url`
+  and `parked` excepted: there is nothing to retry), or whose `terms_found` is `no`, one per line, and prints the
+  count by status. Dead sites are included; Browserless settles them cheaply, since a blocked attempt costs seconds.
 - The scrape workflow's `only_ids` input also accepts `@input/retry-ids.txt`, read from the checked-out repo, so a
   thousand ids need not fit in a dispatch input. The file is committed before dispatching.
 - Merging: the local `out/results.csv` is copied to `out/final/shard-previous.csv`, the Actions `results.csv`
@@ -140,9 +149,10 @@ knows the API.
 - `src/probe-jev.mjs <url>`: opens a lobby in the local Chrome, prints the heuristic candidates, Jev's state and
   answers, follows the pick and prints the page judgment. Run against the failing casinos before anything is wired
   in: crusado-e.com, spinit.com, betico.pro, ab.betrivers.ca, megafrenzy.com, clubscasino.com, dexsport.io.
-- Acceptance: a local run over the 116 failing ids
-  (`node --env-file=.env src/scrape.mjs --ids …`), then a report. Target: terms found for the 64 accordion and
-  the PDF cases; no regression on a 30-casino sample of previously successful ids.
+- Acceptance: a local run over the 116 failing ids (`node --env-file=.env src/scrape.mjs --ids …`), then a
+  report. Target: every row that is `ok` has `terms_found = yes`, or its `terms_tried` ends in `(wall)`; every
+  other miss is probed and fixed or, when only a casino-specific rule would fix it, listed for the user. No
+  regression on a 30-casino sample of previously successful ids.
 - Pilot of the local phase: 50 casinos with `--concurrency 6`, headless, checking challenge-page rate and
   `ip_country` before the full set.
 
