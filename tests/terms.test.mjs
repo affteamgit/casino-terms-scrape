@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, notCasino, sameAsLobby, fingerprint } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -34,4 +34,24 @@ test("englishVariant: a language prefix becomes /en, anything else is left alone
   assert.equal(englishVariant("https://x.com/de"), "https://x.com/en");
   assert.equal(englishVariant("https://x.com/no/rules?a=1#top"), "https://x.com/en/rules?a=1#top");
   assert.equal(englishVariant("not a url"), "");
+});
+
+test("notCasino: a review site's disclaimer, unless the lobby links its own terms", () => {
+  const review = "megafrenzy.com is an independent review site and does not run any casino. 21+ No purchase necessary T&Cs apply";
+  const own = [{ href: "https://megafrenzy.com/terms", score: 10 }];
+  assert.match(notCasino(review, [], "https://megafrenzy.com/"), /review/);
+  assert.match(notCasino("Some pages. We may earn a commission when you sign up.", [{ href: "https://megafrenzy.com/promo-terms", score: 2 }], "https://megafrenzy.com/"), /commission/);
+  assert.equal(notCasino(review, own, "https://megafrenzy.com/"), "", "its own terms link: a casino");
+  assert.match(notCasino(review, [{ href: "https://d1.cloudfront.net/t.pdf", score: 8 }], "https://megafrenzy.com/"), /review/, "a candidate on another domain does not count");
+  assert.equal(notCasino("Welcome to Example Casino. Join our affiliate programme and refer a friend. Play slots.", [], "https://example.com/"), "", "an affiliate programme page is not the disclaimer");
+});
+
+test("sameAsLobby: a hidden text that is the lobby's own is nothing opened", () => {
+  const lobby = ("Welcome to the lobby. " + "slots live games ".repeat(300)).trim();
+  const ref = { len: lobby.length, fp: fingerprint(lobby) };
+  assert.equal(sameAsLobby(lobby, ref), true);
+  assert.equal(sameAsLobby(lobby + " extra", ref), true, "same start");
+  assert.equal(sameAsLobby("x".repeat(Math.round(lobby.length * 1.04)), ref), true, "within 5% of the length");
+  assert.equal(sameAsLobby("General Terms and Conditions. " + "x".repeat(lobby.length * 2), ref), false);
+  assert.equal(sameAsLobby("General Terms ".repeat(300), { len: 0, fp: "" }), false, "a lobby with no hidden text");
 });

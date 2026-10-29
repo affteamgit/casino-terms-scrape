@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf } from "./links.mjs";
+import { termsCandidates, registrable, isPdf, docLinks, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -45,6 +45,22 @@ export async function dismissCookies(page) {
 // A parked or for-sale domain is not a casino: it gets its own status so it does not count as reached.
 export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy|sedo\.com|dan\.com|afternic|hugedomains|domain (has )?expired|make an offer/i;
 export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.slice(0, 3000));
+
+// A review or affiliate site is not a casino either. The disclaimer has to be on the lobby itself, and a lobby that
+// links its own terms (a candidate of score 5 or more on the casino's domain) is a casino with an affiliate page.
+export const NOT_CASINO_TEXT = /independent review site|does not (run|operate) any casino|we may earn a commission|affiliate disclosure/i;
+export function notCasino(text, cands, pageUrl) {
+  const m = NOT_CASINO_TEXT.exec(text);
+  if (!m) return "";
+  const own = registrable(host(pageUrl));
+  if (cands.some((c) => c.score >= 5 && host(c.href).endsWith(own))) return "";
+  return m[0].toLowerCase();
+}
+
+// Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
+// anything the lobby says about terms. Same opening, or a length within 5% of the lobby's hidden text.
+export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
+export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
 // Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
 // terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
@@ -223,6 +239,21 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     } catch (e) { tried.push(`${c.href} (pdf unreadable: ${clip(e.message, 50)})`); }
     return null;
   };
+  // A thin terms page that only offers its document ("use the link below to view or download the Terms of Use"):
+  // reached, not a wall, named like terms, and not itself the terms. Its own links to a document (a PDF, or "download",
+  // "view") on the casino's domain or a file host are read, two at most and one hop only.
+  let hopping = false;
+  const hopFrom = async (d) => {
+    if (hopping || d.note === "wall") return null;
+    const from = page.url(), meta = await pageMeta();
+    if (!TERMS_TEXT.test([meta.title, ...meta.headings].join(" "))) return null;
+    const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.title || "").trim().slice(0, 80) }))).catch(() => []);
+    const docs = docLinks(links, from);
+    dbg("hop", from, docs.map((l) => `${l.href} "${l.text}"`).join(" | ") || "no document link");
+    hopping = true;
+    try { for (const doc of docs) { const r = await tryLink(doc); if (r) return { ...r, via: from }; } } finally { hopping = false; }
+    return null;
+  };
   const tryLink = async (c, lenient = false) => {
     if (isPdf(c.href)) return tryPdf(c, lenient);
     let resp;
@@ -240,7 +271,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return { href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried };
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    return null;
+    return hopFrom(d);
   };
   // An affiliate landing carries its tracking parameters into every link (go.netbet.co.uk); the page behind the
   // clean URL is the one a player reads, so it is tried first.
@@ -257,6 +288,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
       const target = lobby.clickables.find((x) => x.text === c.text);
       if (!target) { tried.push(`click "${c.text}" (gone)`); continue; }
       const before = await bodyText(page);
+      // What the lobby hides, to tell a document the click opened from the lobby's own text (megafrenzy.com).
+      const lh = await page.evaluate(hiddenTextInPage).catch(() => "");
+      const lobbyHidden = { len: lh.length, fp: fingerprint(lh) };
       // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
       await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
       // Either the app navigates, or it opens the document in place.
@@ -264,8 +298,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
       const d = await readDoc(page, 15000, readsLikeTerms);
       const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
       dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      if ((navigated ? d.ok : grew) && await isTermsPage(d.text, await pageMeta())) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
+      // No navigation and the hidden text is the lobby's own: nothing opened, whatever it says about terms.
+      const unchanged = !navigated && d.hidden && sameAsLobby(d.text, lobbyHidden);
+      if (!unchanged && (navigated ? d.ok : grew) && await isTermsPage(d.text, await pageMeta())) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", hidden: !!d.hidden, tried };
       tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
+      if (navigated) { const r = await hopFrom(d); if (r) return r; }
     } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
   }
   // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
@@ -318,6 +355,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     const looksLikeTerms = d.ok && d.text.length > Math.min(lobbyText.length * 0.5, 8000) + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
     if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried };
+    const hopped = await hopFrom(d);
+    if (hopped) return hopped;
   }
   tried.push(`${guesses.length} sitemap/guessed paths`);
   for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c, true); if (r) return { ...r, via: "promo-terms" }; }

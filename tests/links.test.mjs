@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsCandidates, otherDocs, regionalSites, isPdf } from "../src/links.mjs";
+import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -85,4 +85,16 @@ test("Nordic link text and /rules: spinit2's \"Vilkår og betingelser\" is the t
   assert.deepEqual(termsCandidates([L("Sports Betting Rules", "https://x.com/sports-rules", true)], "https://x.com/"), []);
   assert.equal(termsCandidates([L("Användarvillkor", "https://x.se/anvandarvillkor", true), L("Käyttöehdot", "https://x.fi/ehdot", true)], "https://x.se/").length, 1);
   assert.equal(termsCandidates([L("Käyttöehdot", "https://x.fi/info", true)], "https://x.fi/").length, 1);
+});
+
+test("docLinks: a thin terms page's link to its document; privacy PDFs and other domains' PDFs are not chosen", () => {
+  const page = "https://clubscasino.com/terms-of-use/";
+  const pdf = "https://clubscasino.com/wp-content/uploads/2026/07/KHK-Games-Clubs-Poker-Terms-of-Use-06_30_2026.pdf";
+  const links = [L("Home", "https://clubscasino.com/"), L("Games", "https://clubscasino.com/games/"), L("Privacy Policy", "https://clubscasino.com/wp-content/uploads/2026/07/Privacy-Policy.pdf"),
+    L("Download", pdf), L("Terms of Use", page), L("Terms", "https://regulator.gov/terms.pdf"), L("Contact", "mailto:support@clubscasino.com")];
+  assert.deepEqual(docLinks(links, page).map((l) => l.href), [pdf]);
+  assert.deepEqual(docLinks([L("Terms of Use", "https://other.com/terms-of-use.pdf"), L("Download", "https://other.com/x")], page), [], "an off-domain PDF is not the casino's");
+  assert.deepEqual(docLinks([L("Download", "https://d1abc.cloudfront.net/legal/terms.pdf")], page).map((l) => l.href), ["https://d1abc.cloudfront.net/legal/terms.pdf"], "a file host is");
+  assert.deepEqual(docLinks([L("View document", "https://clubscasino.com/legal/doc-7"), L("Read more", "https://clubscasino.com/blog/win-big")], page).map((l) => l.href), ["https://clubscasino.com/legal/doc-7", "https://clubscasino.com/blog/win-big"]);
+  assert.equal(docLinks(Array.from({ length: 6 }, (_, i) => L("Download", `https://clubscasino.com/f${i}.pdf`)), page).length, 2, "two at most");
 });

@@ -6,7 +6,7 @@ import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
 import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
-import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms, isParked } from "./terms.mjs";
+import { sleep, host, clip, CHALLENGE_TEXT, settle, readLobby, readDoc, fetchTerms, isParked, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -168,6 +168,9 @@ async function attempt(job, url, country, type) {
         base.finalUrl = lobby.url;
       } catch { /* the first lobby stands */ }
     }
+    // A review or affiliate site is not a casino: it gets the parked status, with the reason.
+    const nc = notCasino(`${text}\n${lobby.footer}`, termsCandidates(lobby.links, lobby.url), lobby.url);
+    if (nc) return { ...base, status: "parked", error: `not casino: ${nc}` };
     const docs = [{ label: "footer", text: lobby.footer }];
     const jev = { notes: [] };
     const terms = await fetchTerms(page, lobby, jev);
@@ -215,7 +218,7 @@ async function run(job) {
       }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
-      if (r.status === "parked") break outer; // a for-sale page is the same from every exit
+      if (r.status === "parked") { fallback = null; break outer; } // a for-sale page is the same from every exit
       if (r.status === "challenge" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {

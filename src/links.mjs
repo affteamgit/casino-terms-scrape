@@ -2,7 +2,7 @@
 // scored rather than taking the first match: promo cards carry "T&Cs apply" links to the home page or to the
 // promotion's own terms, and those sit above the footer in the DOM.
 const TERMS_PATH = /terms|conditions|\btos\b|\bt-?and-?c|\bt&c|\bagb\b|termos|condi[cç]|r[eè]gles|regulamin|pravila|kurallar|szabály|\blegal\b|general-?rules|user-?agreement|\brules\b/i;
-const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår/i;
+export const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår/i;
 const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
@@ -68,4 +68,23 @@ export function regionalSites(links, pageUrl, country = "") {
   // The exit country's site first, then English-language markets (the quote patterns are English), then the rest.
   const rank = (d) => (country && d.endsWith("." + country) ? 0 : 1 + Math.max(0, ["co.uk", "ie", "com", "nz", "ca", "com.au", "eu"].findIndex((t) => d.endsWith("." + t)) + 1 || 99));
   return out.sort((a, b) => rank(a) - rank(b)).map((d) => `https://www.${d}/`);
+}
+
+/**
+ * A thin terms page that only says "use the link below to view or download the Terms of Use" (clubscasino.com):
+ * the links on it that lead to the document. A PDF, or a link whose text says download, view, open or read, or names
+ * the terms; on the casino's own domain or a file host. PDFs and links that name the terms come first; at most two.
+ */
+export function docLinks(links, pageUrl) {
+  const home = registrable(host(pageUrl)), seen = new Set();
+  const rank = (l) => (isPdf(l.href) ? 2 : 0) + (TERMS_PATH.test(path(l.href)) || TERMS_TEXT.test(l.text || "") ? 3 : 0);
+  return links.filter((l) => {
+    if (!/^https?:/i.test(l.href) || isHome(l.href) || l.href === pageUrl || seen.has(l.href)) return false;
+    const text = (l.text || "").trim(), name = path(l.href).split("/").filter(Boolean).pop() || "";
+    if (!(isPdf(l.href) || /download|view|open|read/i.test(text) || TERMS_TEXT.test(text))) return false;
+    if (!(host(l.href).endsWith(home) || FILE_HOST.test(host(l.href)))) return false;
+    if (NOT_TERMS.test(text + " " + name) || PROMO.test(text + " " + name)) return false;
+    seen.add(l.href);
+    return true;
+  }).map((l, i) => ({ l, i, r: rank(l) })).sort((a, b) => b.r - a.r || a.i - b.i).map((x) => x.l).slice(0, 2);
 }
