@@ -1,6 +1,8 @@
 // Everything the scraper asks Jev (TypeSafe AI): the two judgments, their wording, how the answers are read, and
 // the HTTP call. Jev supplies judgments; the code in terms.mjs decides what to do with them, and runs unchanged
 // when there is no key or the call fails.
+import { registrable, withinDomain, FILE_HOST } from "./links.mjs";
+
 const API = "https://api.typesafe.ai/v1/systemone";
 export const MODEL = "jev-1.14.0"; // pinned: aliases move when a new release ships
 export const LINK_NOUL_MIN = 0.7; // "the lobby has a terms link" must be at least this likely before a pick is used
@@ -19,6 +21,7 @@ const key = () => process.env.TYPESAFE_API_KEY || "";
 export const jevEnabled = () => !!key();
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 const path = (u) => { try { const x = new URL(u); return x.pathname + x.search; } catch { return u; } };
+const host = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.replace(/^www\./, "").toLowerCase() : ""; } catch { return ""; } };
 const slug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
 const LEGAL = /terms|conditions|\btos\b|legal|agreement|rules|policy|privacy|regulamin|\bagb\b|bedingungen|condi|termos/i;
 
@@ -42,7 +45,8 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fe
 /**
  * The lobby as Jev sees it: legal-looking footer links, then the clickable texts, then legal-looking links elsewhere,
  * then the rest of the footer; one entry per href; at most MAX_ENTRIES, so a footer of game links cannot push the
- * terms out. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. Option names
+ * terms out. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. With fewer
+ * than five entries the page's last anchors are added (see below). Option names
  * are sent to the model, so each id starts with the link's own words.
  */
 export function linkEntries(lobby) {
@@ -61,6 +65,13 @@ export function linkEntries(lobby) {
   for (const c of clickables) add(c.text, "", c.footer, "text");
   for (const l of links) if (!l.footer && legal(l)) add(l.text, l.href, false, "link");
   for (const l of links) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
+  // No footer was found and nothing reads as legal (koalabet, jasino, betportal): Jev still sees the bottom of the
+  // page, the last anchors in DOM order (bottom first), on the casino's domain or a file host.
+  if (out.length < 5) {
+    const own = registrable(host(lobby?.url || ""));
+    const near = (l) => { const h = host(l.href); return !!h && (withinDomain(h, own) || FILE_HOST.test(h)); };
+    for (const l of [...links].reverse()) if (out.length < MAX_ENTRIES && near(l)) add(l.text, l.href, false, "link");
+  }
   return out;
 }
 

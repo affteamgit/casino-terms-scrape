@@ -12,7 +12,7 @@ const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options
 const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;
 // Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront). Other domains are never the terms:
 // a regulator's or a game provider's /terms must not win.
-const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net)$|^(cdn|static|files|assets|docs)\./i;
+export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net)$|^(cdn|static|files|assets|docs)\./i;
 export const isPdf = (u) => /\.pdf(\?|#|$)/i.test(u);
 
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; } };

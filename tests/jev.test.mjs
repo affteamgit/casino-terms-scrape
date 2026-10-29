@@ -31,6 +31,24 @@ test("linkEntries: a non-footer link joins only when it looks legal, and the lis
   assert.ok(!e.some((x) => x.text === "Blackjack"));
 });
 
+test("linkEntries: no footer found, so Jev sees the bottom of the page (koalabet, jasino, betportal)", () => {
+  const links = [L("Home", "https://k.io/"), ...Array.from({ length: 70 }, (_, i) => L(`Game ${i}`, `https://k.io/g/${i}`)),
+    L("Partner", "https://partner.example.com/x"), L("Docs", "https://docs.k.io/about.html"), L("Help", "https://cdn.files.example/help.pdf"), L("Game 69", "https://k.io/g/69")];
+  const e = linkEntries({ url: "https://k.io/en", links, clickables: [] });
+  assert.equal(e.length, MAX_ENTRIES);
+  assert.deepEqual(e.slice(0, 3).map((x) => x.text), ["Game 69", "Help", "Docs", "Game 68"].slice(0, 3), "bottom of the page first, one entry per href, a file host kept");
+  assert.ok(!e.some((x) => x.text === "Partner"), "another domain is left out");
+  assert.ok(e.every((x) => x.in_footer === false && x.kind === "link"));
+  assert.ok(!e.some((x) => x.href === "https://k.io/g/0"), "only the last anchors");
+  // a lobby whose footer gave five or more entries is not padded
+  const footer = Array.from({ length: 5 }, (_, i) => L(`Link ${i}`, `https://k.io/f/${i}`, true));
+  assert.equal(linkEntries({ url: "https://k.io/", links: [...links, ...footer], clickables: [] }).length, 5);
+  // a few legal entries are padded, and kept ahead of the padding
+  const few = linkEntries({ url: "https://k.io/", links: [L("Privacy", "https://k.io/privacy"), ...links.slice(0, 10)], clickables: [{ text: "Terms of Service", footer: false }] });
+  assert.deepEqual(few.slice(0, 2).map((x) => x.text), ["Terms of Service", "Privacy"]);
+  assert.equal(few.length, 12);
+});
+
 test("termsLinkQuestions: the Choice's options are the entry ids and the state carries no kind", () => {
   const e = linkEntries(betico);
   const q = termsLinkQuestions(e);
