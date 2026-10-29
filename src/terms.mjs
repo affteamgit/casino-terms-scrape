@@ -1,7 +1,8 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable } from "./links.mjs";
+import { termsCandidates, registrable, isPdf } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
+import { pdfText } from "./pdf.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -133,8 +134,27 @@ export async function fetchTerms(page, lobby) {
   const tried = [];
   const cands = termsCandidates(lobby.links, lobby.url);
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
+  // A PDF is fetched as bytes and read in Node. page.request shares the session's cookies but not its proxy: it
+  // leaves from this process (the VPN locally, the Actions runner on Browserless), which the file hosts allow.
+  const tryPdf = async (c, lenient) => {
+    try {
+      const r = await page.request.get(c.href, { timeout: 30000 });
+      if (!r.ok()) throw new Error(`http ${r.status()}`);
+      const body = await r.body();
+      if (body.length > 20 * 1048576) throw new Error("over 20 MB");
+      const text = await pdfText(body);
+      const good = text.length >= 500 && (lenient || readsLikeTerms(text));
+      dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
+      if (good) return { href: c.href, text, via: "link", pdf: true, tried };
+      tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
+    } catch (e) { tried.push(`${c.href} (pdf unreadable: ${clip(e.message, 50)})`); }
+    return null;
+  };
   const tryLink = async (c, lenient = false) => {
-    try { await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
+    if (isPdf(c.href)) return tryPdf(c, lenient);
+    let resp;
+    try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
+    if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() }, lenient);
     let d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.

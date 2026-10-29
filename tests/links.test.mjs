@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsCandidates, otherDocs, regionalSites } from "../src/links.mjs";
+import { termsCandidates, otherDocs, regionalSites, isPdf } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -54,4 +54,21 @@ test("regionalSites lists the brand's other domains: the exit country's first, t
   const links = [L("Sweden", "https://www.unibet.se/"), L("UK", "https://www.unibet.co.uk/"), L("Ireland", "https://www.unibet.ie/"), L("Help", "https://help.unibet.com/"), L("Kindred", "https://www.kindredgroup.com/")];
   assert.deepEqual(regionalSites(links, "https://www.unibet.com/", "ie"), ["https://www.unibet.ie/", "https://www.unibet.co.uk/", "https://www.unibet.se/"]);
   assert.deepEqual(regionalSites(links, "https://www.unibet.com/", "direct"), ["https://www.unibet.co.uk/", "https://www.unibet.ie/", "https://www.unibet.se/"]);
+});
+
+test("betico: a footer Terms link to a PDF on a file host qualifies; a regulator's /terms and a non-footer CDN link do not", () => {
+  const pdf = "https://d2xmnpb6h303sl.cloudfront.net/static/navigation/terms_and_conditions.pdf";
+  const links = [L("Terms of Service", pdf, true), L("Terms", "https://www.gamblingauthority.cw/terms", true), L("Terms of Service", "https://d2xmnpb6h303sl.cloudfront.net/other/terms.html")];
+  assert.deepEqual(termsCandidates(links, "https://betico.pro/").map((l) => l.href), [pdf]);
+});
+
+test("an own-domain terms page still outranks an off-domain PDF", () => {
+  const links = [L("Terms", "https://cdn.example-casino.com/docs/terms.pdf", true), L("Terms and Conditions", "https://www.example-casino.com/terms", true)];
+  assert.equal(termsCandidates(links, "https://www.example-casino.com/")[0].href, "https://www.example-casino.com/terms");
+});
+
+test("isPdf", () => {
+  assert.equal(isPdf("https://x.com/a/terms.pdf"), true);
+  assert.equal(isPdf("https://x.com/a/terms.pdf?v=3"), true);
+  assert.equal(isPdf("https://x.com/pdf/terms"), false);
 });
