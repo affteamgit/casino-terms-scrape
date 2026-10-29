@@ -157,12 +157,12 @@ const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).
 const TERMS_WORDS = /\bterms?\b|\bconditions?\b|agreement|termos|condi[cç]|\bagb\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden/gi;
 export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
 // `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
-// with only the navigation is stable long before the document itself arrives (NetBet's help pages). Text that has
-// stopped changing and still does not satisfy it may be in the page but collapsed (SoftSwiss accordions): then the
-// hidden text is read, and used when it is the document.
+// with only the navigation is stable long before the document itself arrives (NetBet's help pages). Text that does
+// not satisfy it may be in the page but collapsed (SoftSwiss accordions): then the hidden text is read, and used when
+// it is the document.
 export async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
   const t0 = Date.now();
-  let lastLen = -1, seenLen = -1, wallSince = 0;
+  let lastLen = -1, seenLen = -1, wallSince = 0, hiddenAt = 0, lastHidden = -1;
   const hidden = async (t) => {
     const h = await page.evaluate(hiddenTextInPage).catch(() => "");
     return preferHidden(t, h) && !placeholder(h) && want(h) ? h : "";
@@ -177,9 +177,13 @@ export async function readDoc(page, budget = 25000, want = (t) => t.length >= 50
     if (t.length >= 500 && !DOC_WALL.test(head) && !DOC_LOADING.test(t.slice(0, 400)) && !placeholder(t) && want(t)) {
       if (t.length === lastLen) return { ok: true, text: t };
       lastLen = t.length;
-    } else if (settled && !DOC_WALL.test(head)) {
+    } else if (!DOC_WALL.test(head) && (settled || Date.now() - hiddenAt >= 3000)) {
+      // The hidden text is read whether or not the visible text has settled: a page with a live element never settles.
+      // Unsettled, it counts once two reads 3 s apart agree on its length (within 2%: a ticker is part of it).
+      hiddenAt = Date.now();
       const h = await hidden(t);
-      if (h) return { ok: true, text: h, hidden: true };
+      if (h && (settled || Math.abs(h.length - lastHidden) <= h.length * 0.02)) return { ok: true, text: h, hidden: true };
+      lastHidden = h ? h.length : -1;
     }
     await sleep(1500);
   }
@@ -189,12 +193,30 @@ export async function readDoc(page, budget = 25000, want = (t) => t.length >= 50
   return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
 }
 
-/** Clicks what looks like a collapsed section header; returns how many were opened. */
+/**
+ * Clicks what looks like a collapsed section header; returns how many were clicked. Besides the marked-up kinds
+ * (aria-expanded, <details>, accordion/collapse classes), a run of numbered section titles: five or more elements
+ * reading "1. Introduction", "2. General Terms", ... (betfm.cc's utility-class accordion) or a bare "1", "2", ... next
+ * to the title (the scored/greatspin/spinaro template), numbered 1, 2, 3 in page order.
+ */
 export async function expandSections(page) {
   return page.evaluate(() => {
-    const els = [...document.querySelectorAll('[aria-expanded="false"], details:not([open]) > summary, [class*="accordion" i] [class*="header" i], [class*="accordion" i] [class*="title" i], [class*="collaps" i] [class*="header" i], [class*="collaps" i] [class*="title" i]')]
-      .filter((el) => el.offsetParent !== null && (el.innerText || "").trim().length < 120 && !el.closest("nav, header, footer, [class*=menu i], [class*=cookie i]"));
-    for (const el of els.slice(0, 60)) { try { el.click(); } catch { /* not clickable */ } }
+    // Page chrome is skipped, but a "menu" or "header" container that holds half the page or more is the page's own
+    // wrapper (scored's root div has a menu-* class), not chrome.
+    const half = (document.body.innerText || "").length / 2, memo = new Map();
+    const chrome = (el) => { const c = el.closest("nav, header, footer, [class*=menu i], [class*=cookie i]"); if (!c) return false; if (!memo.has(c)) memo.set(c, (c.innerText || "").length < half); return memo.get(c); };
+    const ok = (el) => el.offsetParent !== null && (el.innerText || "").trim().length < 120 && !chrome(el);
+    const marked = [...document.querySelectorAll('[aria-expanded="false"], details:not([open]) > summary, [class*="accordion" i] [class*="header" i], [class*="accordion" i] [class*="title" i], [class*="collaps" i] [class*="header" i], [class*="collaps" i] [class*="title" i]')].filter(ok);
+    const numbered = [];
+    for (const el of document.querySelectorAll("body *")) {
+      if (el.children.length || !ok(el)) continue;
+      const a = el.closest("a[href]");
+      if (a && !/^(#|javascript:|)$/i.test((a.getAttribute("href") || "").trim())) continue;
+      const m = /^(\d{1,2})\.?(\s+\S.*)?$/s.exec((el.innerText || "").trim());
+      if (m && Number(m[1]) === numbered.length + 1) numbered.push(el);
+    }
+    const els = [...marked, ...(numbered.length >= 5 ? numbered.filter((el) => !marked.includes(el)) : [])];
+    for (const el of els.slice(0, 80)) { try { el.click(); } catch { /* not clickable */ } }
     return els.length;
   }).catch(() => 0);
 }

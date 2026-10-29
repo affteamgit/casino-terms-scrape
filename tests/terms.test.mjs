@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -199,5 +199,45 @@ test("readLobby waits for a footer that mounts late after scrolling, and reads i
     assert.ok(lobby.clickables.some((c) => c.text === "Vilkår" && c.footer), JSON.stringify(lobby.clickables));
     assert.match(lobby.footer, /Spillemyndigheten/);
     assert.ok(lobby.links.some((l) => l.href === "https://b.com/no/om" && l.footer));
+  } finally { await browser.close(); }
+});
+
+const WORDS = "account deposit withdrawal player bonus wager limit verification identity document licence operator jurisdiction dispute complaint closure fraud collusion software liability warranty breach notice amendment law court currency fee balance session game bet stake winnings jackpot refund chargeback minor age residence country restriction".split(" ");
+const SECTION = (i) => `These terms and conditions govern your ${WORDS.map((w, k) => `${w}${(k + i) % 5 ? "" : " terms"}`).join(" ")}. Section ${i}.`;
+// betfm.cc: utility-class divs, no aria or accordion class; a section's text mounts only when its title is clicked.
+const NUMBERED = (bare) => `<!doctype html><html><body><h1>Terms</h1><div id="jp"><span>5</span><span>7</span><span>1</span><span>9</span></div>
+${["Introduction", "General Terms", "Your Obligations", "Restricted Use", "Registration", "Your Account"].map((t, i) => `<div class="flex"><div class="row" onclick="this.parentElement.insertAdjacentHTML('beforeend', '<p>${SECTION(i + 1)}</p>')">${bare ? `<span>${i + 1}</span><span>${t.toUpperCase()}</span>` : `<span>${i + 1}. ${t}</span>`}</div></div>`).join("")}</body></html>`;
+
+test("expandSections opens a run of numbered section titles, with or without the title beside the number (betfm, scored)", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    for (const bare of [false, true]) {
+      await page.setContent(NUMBERED(bare));
+      assert.equal(await expandSections(page), 6, bare ? "bare numbers" : "numbered titles");
+      const t = await page.evaluate(() => document.body.innerText);
+      assert.ok(readsLikeTerms(t) && /Section 6\./.test(t));
+    }
+    // the page wrapped in a div whose class says "menu" (scored): a wrapper, not a menu; a real menu's numbers are skipped
+    await page.setContent(NUMBERED(true).replace("<body>", '<body><div class="bg-main menu-closed">').replace("</body>", "</div></body>").replace('<div id="jp">', '<nav class="side-menu"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span></nav><div id="jp">'));
+    assert.equal(await expandSections(page), 6);
+    // a jackpot's digits and fewer than five numbered titles are not sections
+    await page.setContent(`<html><body><span>1</span><span>2</span><span>3</span><span>4</span><div>1. One</div></body></html>`);
+    assert.equal(await expandSections(page), 0);
+  } finally { await browser.close(); }
+});
+
+test("readDoc reads the hidden text even when a live element keeps the visible text changing (jasino, tonplay)", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><div id="tick">0</div><p>Menu Casino Sports</p><div style="display:none">${SECTION(1).repeat(12)}</div>
+<script>let n = 0; setInterval(() => { document.getElementById("tick").textContent = "x".repeat(++n % 7); }, 400);</script></body></html>`);
+    const t0 = Date.now();
+    const d = await readDoc(page, 30000, readsLikeTerms);
+    assert.ok(Date.now() - t0 < 8000, "read while unsettled, not at the end of the budget");
+    assert.equal(d.ok, true);
+    assert.equal(d.hidden, true);
+    assert.ok(d.text.length > 3000);
   } finally { await browser.close(); }
 });
