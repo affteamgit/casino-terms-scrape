@@ -8,7 +8,8 @@ test("isParked: for-sale and parking pages, not a casino that merely mentions a 
   assert.equal(isParked("English Copyright © 2026 GoDaddy Operating Company, LLC. Alle Rechte vorbehalten."), true);
   assert.equal(isParked("The domain name ScatterHall.com is for sale!"), true);
   assert.equal(isParked("Secured by GoDaddy. Play slots here. Licensed in Curacao. 18+ Gamble responsibly."), false, "an SSL seal is not a parked page");
-  assert.equal(isParked("Welcome. Download our app, abandon.com and mundane.com are not for us."), false);
+  assert.equal(isParked("Welcome. Our partners: jordan.com and sudan.com. Play slots and live games here."), false, "dan.com inside another word");
+  assert.equal(isParked("Listed at dan.com. Contact the owner."), true);
   assert.equal(isParked("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "This domain is operated by Example N.V."), false);
 });
 
@@ -125,5 +126,39 @@ test("a registration form that calls itself consent is not a cookie banner", asy
     await page.setContent(`<html><body><div class="consent-box"><form><input name="email"><input type="password"><input name="x"><button type="button" onclick="window.__clicked=1">Agree</button></form></div></body></html>`);
     assert.equal(await dismissCookies(page), false);
     assert.equal(await page.evaluate(() => window.__clicked || 0), 0);
+  } finally { await browser.close(); }
+});
+
+const longText = (n) => "Cookie declaration: this site stores small files to remember your choices. ".repeat(Math.ceil(n / 75));
+
+test("a long cookie dialog with its own header, tab nav and page-footer part is still a banner", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><main><p>Play now.</p></main>
+<div class="cookie-information" id="cc" style="position:fixed;top:0;left:0;right:0;background:#fff"><header><h2>Cookies</h2></header><nav><a href="#a">Samtykke</a><a href="#b">Detaljer</a></nav>
+<p>${longText(5000)}</p><div class="coi-banner__page-footer"><button>Afvis alle</button><button onclick="document.getElementById('cc').remove()">ACCEPTER ALLE</button></div></div>
+<footer><a href="https://casino.example/terms-and-conditions">Terms and Conditions</a><a href="https://casino.example/privacy">Privacy</a><p>${"Licensed and regulated. ".repeat(10)}</p></footer></body></html>`);
+    assert.ok((await page.evaluate(() => document.getElementById("cc").innerText.length)) > 4000);
+    assert.equal(await dismissCookies(page), true);
+    assert.equal(await page.evaluate(() => !!document.getElementById("cc")), false);
+    const lobby = await readLobby(page);
+    assert.match(lobby.footer, /Terms and Conditions/);
+    assert.equal(lobby.links.find((l) => /terms-and-conditions/.test(l.href)).footer, true);
+  } finally { await browser.close(); }
+});
+
+test("a div-only page wrapped in a consent-classed div is not a banner", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<html><body><div class="consent-app"><div class="content"><p>${longText(4000)}</p>
+<a href="https://casino.example/continue" onclick="window.__clicked=(window.__clicked||0)+1;return false">Continue</a></div>
+<div class="footer"><a href="https://casino.example/terms-and-conditions">Terms and Conditions</a><p>${"Licensed and regulated. ".repeat(10)}</p></div></div></body></html>`);
+    assert.equal(await dismissCookies(page), false);
+    assert.equal(await page.evaluate(() => window.__clicked || 0), 0, "nothing clicked");
+    const lobby = await readLobby(page);
+    assert.match(lobby.footer, /Licensed and regulated/);
+    assert.equal(lobby.links.find((l) => /terms-and-conditions/.test(l.href)).footer, true);
   } finally { await browser.close(); }
 });

@@ -100,5 +100,6 @@ test("docLinks: a thin terms page's link to its document; privacy PDFs and other
   assert.deepEqual(docLinks([L("Download", "https://clubscasino.com/files/t.docx")], page).length, 1);
   assert.deepEqual(docLinks([L("Terms of Use", "https://evilclubscasino.com/terms.pdf"), L("Download", "https://evilclubscasino.com/uploads/t.pdf")], page), [], "a lookalike domain is not the casino");
   assert.equal(docLinks([L("Download", "https://cdn.clubscasino.com/t.pdf")], page).length, 1, "a subdomain is");
+  assert.deepEqual(docLinks([L("View", "https://clubscasino.com/profiles/me"), L("Open", "https://clubscasino.com/social-media-x"), L("Read", "https://clubscasino.com/wp-content/media/terms")], page).map((l) => l.href), ["https://clubscasino.com/wp-content/media/terms"], "document-path words are whole path segments");
   assert.equal(docLinks(Array.from({ length: 6 }, (_, i) => L("Download", `https://clubscasino.com/f${i}.pdf`)), page).length, 2, "two at most");
 });

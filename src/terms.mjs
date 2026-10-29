@@ -34,22 +34,25 @@ const CONSENT_TEXT = "^(accept( all| cookies| all cookies)?|agree|i agree|got it
 // Runs inside the page: is this element part of a cookie banner? The nearest ancestor that calls itself a cookie,
 // consent or GDPR element counts only when it is a banner-sized thing: not <body> or <html> (WordPress Cookie Notice
 // puts "cookies-not-set" on body), not a registration or login form ("consent" boxes), and not a wrapper around the
-// whole page (long text that holds the page's own footer, main or navigation).
-export function inBannerInPage(el) {
+// page: a long container that holds the page's own footer or main content. A dialog's own <header>, <nav> or
+// "page-footer" part (Cookie Information's .coi-banner__page-footer) does not make it a wrapper: only <footer>, #footer,
+// <main>, role=contentinfo, a class that is exactly "footer", or a footer-named element with 3+ links does.
+// `memo` is a Map the caller makes once per evaluate, so a verdict is not kept on the page's nodes.
+export function inBannerInPage(el, memo) {
   const SEL = "[class*=cookie i], [id*=cookie i], [class*=consent i], [id*=consent i], [class*=gdpr i], [id*=gdpr i], [aria-label*=cookie i]";
+  const isWrapper = (c) => (c.innerText || "").length > 3000
+    && !![...c.querySelectorAll("footer, #footer, main, [role=contentinfo], [class~=footer], [class*=footer i]")].find((f) => f.matches("footer, #footer, main, [role=contentinfo], [class~=footer]") || f.querySelectorAll("a[href]").length >= 3);
   for (let c = el.closest(SEL); c; c = c.parentElement && c.parentElement.closest(SEL)) {
     if (c === document.body || c === document.documentElement) continue;
-    // Judged once per container: every link of the page asks about the same few ancestors.
-    if (c.__banner === undefined) c.__banner = !c.querySelector("input[type=password]") && ![...c.querySelectorAll("form")].some((f) => f.querySelectorAll("input").length >= 3)
-      && !((c.innerText || "").length > 3000 && c.querySelector("footer, main, nav, header, article"));
-    if (c.__banner) return true;
+    if (!memo.has(c)) memo.set(c, !c.querySelector("input[type=password]") && ![...c.querySelectorAll("form")].some((f) => f.querySelectorAll("input").length >= 3) && !isWrapper(c));
+    if (memo.get(c)) return true;
   }
   return false;
 }
 export async function dismissCookies(page) {
-  const find = (re, inBanner) => {
-    const r = new RegExp(re, "i");
-    const btn = [...document.querySelectorAll("button, a, [role=button]")].find((el) => inBanner(el) && r.test((el.innerText || "").trim().replace(/\s+/g, " ")));
+  const find = (re, inBannerFn) => {
+    const r = new RegExp(re, "i"), memo = new Map();
+    const btn = [...document.querySelectorAll("button, a, [role=button]")].find((el) => inBannerFn(el, memo) && r.test((el.innerText || "").trim().replace(/\s+/g, " ")));
     if (!btn) return false;
     btn.click();
     return true;
@@ -107,8 +110,8 @@ export async function readLobby(page) {
   }
   // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
   // links vanished from the DOM once the page was scrolled back to the top).
-  const read = (clickRe, inBanner) => {
-    const re = new RegExp(clickRe, "i");
+  const read = (clickRe, inBannerFn) => {
+    const re = new RegExp(clickRe, "i"), memo = new Map(), inBanner = (el) => inBannerFn(el, memo);
     // A cookie banner's own "footer" is not the page's (bet25.dk's consent dialog has one and the page has none).
     const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer") && !inBanner(el);
     const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
@@ -314,7 +317,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }) {
     let d = await readDoc(page, c.english ? 15000 : 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it kept its /en segment and is not the lobby again.
     if (c.english && (!/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
-    if (d.note === "wall" && !hopping) pageWalled = true;
+    if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, lenient ? undefined : readsLikeTerms); }

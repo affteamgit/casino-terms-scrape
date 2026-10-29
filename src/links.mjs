@@ -86,7 +86,7 @@ export function docLinks(links, pageUrl) {
     const text = (l.text || "").trim(), name = path(l.href).split("/").filter(Boolean).pop() || "";
     // A verb alone ("Read more") is not enough: it has to lead to something shaped like a document.
     const verb = /\b(download|view|open|read)\b/i.test(text);
-    if (!(isPdf(l.href) || TERMS_TEXT.test(text) || (verb && (/\.(pdf|docx?)(\?|#|$)/i.test(l.href) || /upload|files|docs|documents|static|media/i.test(path(l.href)))))) return false;
+    if (!(isPdf(l.href) || TERMS_TEXT.test(text) || (verb && (/\.(pdf|docx?)(\?|#|$)/i.test(l.href) || /(^|\/)(uploads?|files|docs|documents|static|media)(\/|$)/i.test(path(l.href)))))) return false;
     if (!(withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href)))) return false;
     if (NOT_TERMS.test(text + " " + name) || PROMO.test(text + " " + name)) return false;
     seen.add(l.href);
