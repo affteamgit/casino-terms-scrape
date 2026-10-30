@@ -11,6 +11,7 @@ test("isParked: for-sale and parking pages, not a casino that merely mentions a 
   assert.equal(isParked("Secured by GoDaddy. Play slots here. Licensed in Curacao. 18+ Gamble responsibly."), false, "an SSL seal is not a parked page");
   assert.equal(isParked("Welcome. Our partners: jordan.com and sudan.com. Play slots and live games here."), false, "dan.com inside another word");
   assert.equal(isParked("Listed at dan.com. Contact the owner."), true);
+  assert.equal(isParked("Welcome to my-dan.com casino. Play slots and live games here."), false, "a hyphenated name ending in dan.com");
   assert.equal(isParked("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "This domain is operated by Example N.V."), false);
 });
 

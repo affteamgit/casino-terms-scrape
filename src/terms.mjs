@@ -84,7 +84,7 @@ export async function dismissCookies(page) {
 }
 
 // A parked or for-sale domain is not a casino: it gets its own status so it does not count as reached.
-export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy operating company|sedo\.com|\bdan\.com\b|afternic|hugedomains|domain (has )?expired|make an offer/i;
+export const PARKED_TEXT = /domain( name)?( [\w.-]+)? (is )?(now )?for sale|buy this domain|this domain (is |has been )?(parked|registered)|parked (free|domain)|godaddy operating company|sedo\.com|(?<![\w-])dan\.com\b|afternic|hugedomains|domain (has )?expired|make an offer/i;
 export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.slice(0, 3000));
 // Some for-sale pages refuse the scraper (godaddy's says "Access Denied"), so the address itself is also read:
 // a domain marketplace or parking service is not a casino whatever it answers.
@@ -123,12 +123,6 @@ export function notCasino(text, cands, pageUrl) {
   return m[0].toLowerCase();
 }
 
-/**
- * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
- * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
- * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
- * first 500 characters, for a lobby whose text grew a little since it was measured.
- */
 // The words of a promotion's terms: a bonus, a campaign, wagering, free spins (with the Nordic words the exit sees).
 export const PROMO_OPENING = /bonus|promotion|\bpromo\b|campaign|wager|free ?spins?|welcome (offer|package)|cashback|reload|tournament|kampanj|omsetningskrav|gratisspinn/i;
 /**
@@ -157,6 +151,12 @@ export function addedText(after, before) {
   return after.split("\n").filter((l) => !seen.has(l.trim())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
+/**
+ * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
+ * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
+ * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
+ * first 500 characters, for a lobby whose text grew a little since it was measured.
+ */
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
 // Single-page lobbies render their footer late, some only once it is scrolled into view (betportal.com: ~7 s after
@@ -298,12 +298,6 @@ export async function expandSections(page) {
   }).catch(() => 0);
 }
 
-/**
- * Opens the casino's terms, in this order: anchors that score as the general terms (up to three); for apps whose
- * footer routes from plain elements, a click on the element that reads like the terms link; the sitemap and the
- * paths casinos commonly use; and last, anchors that scored as a promotion's terms, held to the same terms check.
- * Returns the page's text and URL, and what was tried.
- */
 // Locale prefixes the casinos use for their non-English sites. The extraction patterns read English, so a terms
 // page found under one of these is first tried at /en/ (then as found): spinit2.com/no/rules -> spinit2.com/en/rules.
 const NON_ENGLISH = /^\/(no|nb|nn|sv|da|fi|de|fr|es|it|pt|pl|ru|tr|nl|ja|hu|cs|el|ro|bg|hr|sl|sk|lt|lv|et|uk|ar|zh|ko|th|vi|id|hi|ka|kk)(-[a-z]{2})?(?=\/|$)/i;
@@ -341,9 +335,15 @@ export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang
 
 const MAX_PDF = 20 * 1048576;
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
-// `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
-// (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
-// said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
+/**
+ * Opens the casino's terms, in this order: Jev's picks, then anchors that score as the general terms (up to three
+ * besides the picks); for apps whose footer routes from plain elements, a click on the element that reads like the
+ * terms link; the registration page's terms link; the sitemap and the paths casinos commonly use; and last, anchors
+ * that scored as a promotion's terms, held to the same terms check. Returns the page's text and URL, and what was tried.
+ * `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
+ * (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
+ * said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
+ */
 export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } = {}) {
   const tried = [];
   const ask = jev.ask || askJev;
@@ -588,7 +588,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // An affiliate landing carries its tracking parameters into every link (go.netbet.co.uk); the page behind the
   // clean URL is the one a player reads, so it is tried first.
   const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
-  for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
+  // Jev's picks lead and do not take the heuristic's three places.
+  for (const c of cands.filter((c) => c.score > 0).slice(0, 3 + jevLinks.length)) {
     const en = englishVariant(c.href);
     pageWalled = false;
     for (const v of [...(en ? [{ ...c, href: en, english: true }] : []), ...(c.href.includes("?") ? [clean(c), c] : [c])]) { const r = await tryLink(v); if (r) return r; }

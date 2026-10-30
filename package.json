@@ -1,6 +1,7 @@
 {
   "name": "casino-terms-scrape",
   "private": true,
+  "engines": { "node": ">=22.13" },
   "type": "module",
   "scripts": {
     "jobs": "node src/jobs.mjs",

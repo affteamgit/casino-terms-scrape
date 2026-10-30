@@ -1,6 +1,11 @@
-// Scrapes one shard of out/jobs.json through Browserless: follows the tracking link (or domain), records where it
-// landed, from which country and IP, then reads the footer and the terms / payments / KYC pages and stores raw quotes.
-// Usage: BROWSERLESS_TOKEN=... node src/scrape.mjs [--shard 0 --shards 1] [--concurrency 2] [--ids id1,id2]
+// Scrapes one shard of out/jobs.json through the local Chrome or Browserless: follows the tracking link (or domain),
+// records where it landed, from which country and IP, then reads the footer and the terms / payments / KYC pages and
+// stores raw quotes.
+// Usage, local (the installed Chrome; the VPN decides the exit; keys in .env, PROXY_PLAN=local:no):
+//   node --env-file=.env src/scrape.mjs [--concurrency 6] [--ids id1,id2 [--force]]
+// Usage, Browserless:
+//   BROWSERLESS_TOKEN=... node src/scrape.mjs [--shard 0 --shards 1] [--concurrency 2] [--ids id1,id2 [--force]] [--deadline-minutes N]
+// --force re-runs the --ids casinos that already have a result.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
@@ -13,10 +18,13 @@ import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, r
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
 const SHARDS = Number(arg("--shards", 1));
-const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",")) : null;
+const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",").map((s) => s.trim()).filter(Boolean)) : null;
 const FORCE = process.argv.includes("--force"); // with --ids: run them even when a previous result exists
 const DEADLINE = Number(arg("--deadline-minutes", 0)) > 0 ? Date.now() + Number(arg("--deadline-minutes")) * 60000 : Infinity; // no new casino is started after this
 const TOKEN = process.env.BROWSERLESS_TOKEN;
+// An error message may carry the session URL, token included. With no token (a local plan) there is nothing to hide:
+// replace(undefined, ...) would turn the word "undefined" into "***".
+const redact = (m) => (TOKEN ? m.split(TOKEN).join("***") : m);
 const REGION = process.env.BROWSERLESS_REGION || "production-sfo";
 // Exits are tried in phases. "local:no" launches the installed Chrome on this machine (the VPN decides the country;
 // the code is only a label for the rows); "datacenter:ca,de" is Browserless's datacenter proxy (2 units per MB, and
@@ -228,7 +236,7 @@ async function run(job) {
       if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
       if (live.ended(job.id)) break outer; // timed out: its row is written, no more sessions
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
-      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
       mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
@@ -247,11 +255,12 @@ async function run(job) {
         if (u === 0 && job.start_type === "tracking" && !resolved) {
           resolved = await resolveDirect(url).catch(() => "");
           if (resolved) { urls.splice(1, 0, resolved); tried.push("direct(resolve)"); }
-        } else if (tunnel && !TRACKER_HOSTS.test(host(url))) {
+        } else if (tunnel && phase.type !== "local" && !TRACKER_HOSTS.test(host(url))) {
+          // (Locally there is no proxy to go around: a DNS failure is the casino's, and "direct" would be the same Chrome.)
           // The proxy refuses the casino's own domain (it does for some gambling sites). Last resort: no proxy, from
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
-          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
           mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
