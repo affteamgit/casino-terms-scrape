@@ -153,16 +153,28 @@ export function addedText(after, before) {
 }
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 /**
- * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? Stricter
- * than sameAsLobby, since a real terms page often opens with the lobby's header, and the header can run past 2,000
- * characters (elarabet's menu): the same first 2,000 characters or the same first 300, and in either case no more than
- * five terms words (TERMS_WORDS, as readsLikeTerms counts them) beyond the lobby's own. A shell never holds more terms
- * than the lobby: a shorter 404 shell (the header, part of the grid, the footer) is one; a terms page under the header is not.
+ * What a page adds beyond the lobby: both texts with their whitespace collapsed, the page's text without the longest
+ * prefix it shares with the lobby's (the header, the menu) and then without the longest suffix it shares (the footer,
+ * an SEO block). The two never overlap.
  */
-const termsWords = (t) => (t.match(TERMS_WORDS) || []).length;
+export function coreText(text, lobbyText) {
+  const a = text.replace(/\s+/g, " ").trim(), b = lobbyText.replace(/\s+/g, " ").trim();
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let q = 0;
+  while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+  return a.slice(p, a.length - q);
+}
+/**
+ * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? It
+ * opens like the lobby (the same first 2,000 characters, or the same first 300) and adds less than 1,500 characters of
+ * its own beyond the lobby's header and footer (coreText). A 404 shell or the lobby again is; a terms page under the
+ * lobby's header is not, however long the header (elarabet's menu runs past 2,000 characters), and however few terms
+ * words its own part holds (elarabet's terms are mostly a list of restricted countries).
+ */
 export const isShellOf = (text, ref, refText) => !!ref.len
   && (fingerprint(text) === ref.fp || text.slice(0, 300) === refText.slice(0, 300))
-  && termsWords(text) <= termsWords(refText) + 5;
+  && coreText(text, refText).length < 1500;
 /**
  * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
  * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
@@ -541,7 +553,13 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
     // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
     // A strong candidate may show the shell because the blocklist broke its app: it gets the unblocked retry first.
-    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) { tried.push(`${c.href} (lobby shell)`); return (await retryUnblocked(c)) || null; }
+    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) {
+      tried.push(`${c.href} (lobby shell)`);
+      // The unblocked retry's result stands; otherwise a stub under the lobby's header that links its document
+      // (clubscasino's terms page) is still hopped from.
+      const r = await retryUnblocked(c);
+      return r !== undefined ? r : (await hopFrom(d)) || null;
+    }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -605,32 +605,44 @@ test("a PDF is fetched inside the page when it is same-origin, and from Node whe
   });
 });
 
-test("isShellOf: the lobby's own text, or its opening with no more terms words than the lobby; a page that only shares its header is not", () => {
+test("isShellOf: the lobby's opening and next to nothing of its own beyond the lobby's header and footer", () => {
   const header = "Casino Live Sports Promotions VIP Login Register ".repeat(8), grid = "Spin the reels and win big today. ".repeat(80);
   const footer = " Terms and Conditions. Privacy Policy. Responsible Gaming. Licensed and regulated.";
   const lobby = (header + grid + footer).trim();
   const ref = { len: lobby.length, fp: fingerprint(lobby) };
-  assert.equal(isShellOf(lobby, ref, lobby), true, "the same text");
+  assert.equal(isShellOf(lobby, ref, lobby), true, "the lobby itself");
+  assert.equal(isShellOf(header + grid.slice(0, 1200) + "Loading... " + grid.slice(1200) + footer, ref, lobby), true, "the lobby with a loading spinner line");
   assert.equal(isShellOf(lobby.slice(0, 2000) + " a ticker".repeat(30), ref, lobby), true, "the same first 2,000 characters");
-  assert.equal(isShellOf(lobby.slice(0, 300) + "x".repeat(Math.round(lobby.length * 0.08)) + lobby.slice(300), ref, lobby), true, "same opening, 8% longer");
+  assert.equal(isShellOf((header + "Page not found. Back to home" + footer).trim(), ref, lobby), true, "a 404 shell: the header, a line and the footer");
   assert.equal(isShellOf(lobby.slice(0, 300) + " General Terms and Conditions ".repeat(Math.ceil(lobby.length * 2 / 30)), ref, lobby), false, "same header, three times as long");
   assert.equal(isShellOf("x".repeat(lobby.length), ref, lobby), false, "same length, another opening");
   assert.equal(isShellOf("anything", { len: 0, fp: "" }, ""), false, "no lobby text");
   const terms = " These terms and conditions govern your account and the agreement with the operator.";
   const near = lobby.slice(0, 300) + terms.repeat(Math.ceil((lobby.length * 1.05 - 300) / terms.length));
   assert.ok(Math.abs(near.length - lobby.length * 1.05) < terms.length);
-  assert.equal(isShellOf(near, ref, lobby), false, "a terms page under the lobby's header at 1.05 times its length");
-  assert.equal(isShellOf((header + grid.slice(0, grid.length / 2) + "Page not found." + footer).trim(), ref, lobby), true, "a 404 shell: the header, half the grid and the footer");
-  // elarabet.com: the lobby's menu runs past 2,000 characters, so a terms page under it has the lobby's fingerprint.
+  assert.equal(isShellOf(near, ref, lobby), false, "a terms page under the lobby's 300-character header at 1.05 times its length");
+  // elarabet.com: a 2,500-character menu and a 5,000-character SEO footer (10 terms words) around every page; the terms
+  // page's own part is 13,000 characters, mostly a restricted-countries list, with few terms words of its own.
   const menu = "Wheel of Fortune Daily Mystery Bonuses Casino Sport Promotions All Promotions Slots New Popular ".repeat(27);
-  const big = (menu + grid + footer).trim(), bigRef = { len: big.length, fp: fingerprint(big) };
-  const page16k = (menu + terms.repeat(Math.ceil((16000 - menu.length) / terms.length))).trim();
-  assert.ok(menu.length >= 2500 && page16k.length >= 16000 && fingerprint(page16k) === bigRef.fp);
-  assert.equal(isShellOf(page16k, bigRef, big), false, "a 16k terms page under a 2,500-character menu");
-  assert.equal(isShellOf(big, bigRef, big), true, "the lobby itself");
-  assert.equal(isShellOf((menu + grid.slice(0, grid.length / 2) + "Page not found." + footer).trim(), bigRef, big), true, "a 404 shell under the long menu");
-  // the SHELL fixture: the same page on every path is the shell, by its visible and by its hidden text
+  const seoTerms = " All play is subject to our terms and conditions.".repeat(5);
+  const seo = " Play slots, live games and sports with fast payouts every day.".repeat(80).slice(0, 5000 - seoTerms.length) + seoTerms;
+  const countries = " Afghanistan, Albania, Algeria, Belarus, Cuba, Iran, North Korea, Syria, United States, France, Netherlands.".repeat(125);
+  const elaraLobby = (menu + grid + seo).trim(), elaraRef = { len: elaraLobby.length, fp: fingerprint(elaraLobby) };
+  const elaraTerms = (menu + "Terms and Conditions. Players from the following countries may not open an account:" + countries + seo).trim();
+  assert.ok(menu.length >= 2500 && seo.length === 5000 && (seo.match(/terms|conditions/gi) || []).length === 10 && countries.length >= 13000);
+  assert.equal(fingerprint(elaraTerms), elaraRef.fp, "the menu alone fills the fingerprint");
+  assert.equal(isShellOf(elaraTerms, elaraRef, elaraLobby), false, "elarabet's terms: a country list under the lobby's menu and over its footer");
+  assert.equal(isShellOf((menu + "Page not found. Back to home" + seo).trim(), elaraRef, elaraLobby), true, "a 404 shell under the long menu");
+  assert.equal(isShellOf(elaraLobby, elaraRef, elaraLobby), true);
+  // the SHELL fixture: the same page on every path is the shell
   assert.equal(isShellOf(SHELL, { len: SHELL.length, fp: fingerprint(SHELL) }, SHELL), true);
+});
+
+test("coreText: what a page adds between the lobby's shared opening and shared ending, the two never overlapping", () => {
+  assert.equal(coreText("Menu  A B\nOwn part\nFooter X", "Menu A B Games Footer X"), "Own part");
+  assert.equal(coreText("Menu Footer", "Menu Games Footer"), "");
+  assert.equal(coreText("abcabc", "abc"), "abc", "the prefix took the lobby's whole text: no suffix is taken from the rest");
+  assert.equal(coreText("same", "same"), "");
 });
 
 // A lobby whose header holds more than 300 characters of navigation, and a terms page under the same header.
@@ -670,7 +682,11 @@ test("a Jev pick that is also a heuristic candidate keeps that candidate's score
 // elarabet.com: a menu of more than 2,500 characters opens the lobby and every page under it; Jev picks the general
 // terms, and the footer also links a sportsbook's terms (its path misspelled, so the path does not name the product).
 const MENU = `<header><nav>${Array.from({ length: 200 }, (_, i) => `<a href="/c/${i}">${["Wheel of Fortune", "Daily Mystery", "Bonuses", "Casino", "Sport", "Promotions", "Slots", "New", "Popular"][i % 9]} ${i}</a>`).join(" ")}</nav></header>`;
-const ELARA_FOOTER = `<a href="/terms-and-conditions">Terms and Conditions</a><a href="/spotsbook-terms-and-conditions">Sportsbook Terms &amp; Conditions</a>`;
+const ELARA_FOOTER = `<a href="/terms-and-conditions">Terms and Conditions</a> | <a href="/spotsbook-terms-and-conditions">Sportsbook Terms &amp; Conditions</a>`;
+// elarabet's page shape: the menu, the page's own part, and a footer with an SEO block (10 terms words with its links).
+const ELARA_SEO = `<p>${"Play slots, live games and sports with fast payouts every day. ".repeat(40)}${"All play is subject to our terms and conditions. ".repeat(3)}</p>`;
+const ELARA_PAGE = (main) => `<!doctype html><html><body>${MENU}<main>${main}</main><footer>${ELARA_FOOTER}${ELARA_SEO}</footer></body></html>`;
+const COUNTRY_LIST = `<h1>Terms and Conditions</h1><p>Players from the following countries may not open an account:</p><ul>${Array.from({ length: 600 }, (_, i) => `<li>Country ${i}: ${["Afghanistan", "Albania", "Belarus", "Cuba", "Iran", "Syria"][i % 6]}</li>`).join("")}</ul>`;
 
 test("a terms page under the lobby's long menu (the same first 2,000 characters) is the terms, not the lobby shell (elarabet)", async () => {
   await withJevKey(async () => {
@@ -680,13 +696,15 @@ test("a terms page under the lobby's long menu (the same first 2,000 characters)
       const read = [];
       page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
       await site(page, {
-        "/": LOBBY(ELARA_FOOTER).replace("<body>", `<body>${MENU}`),
-        "/terms-and-conditions": TERMS_PAGE().replace("<body>", `<body>${MENU}`),
-        "/spotsbook-terms-and-conditions": TERMS_PAGE("Sportsbook Terms and Conditions").replace("<body>", `<body>${MENU}`),
+        "/": ELARA_PAGE(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`),
+        "/terms-and-conditions": ELARA_PAGE(COUNTRY_LIST),
+        "/spotsbook-terms-and-conditions": ELARA_PAGE(`<h1>Sportsbook Terms and Conditions</h1>${Array.from({ length: 12 }, (_, i) => `<p>${GENERAL(i)}</p>`).join("")}`),
       });
       await page.goto("https://casino.test/");
       const lobbyText = await page.evaluate(() => document.body.innerText);
       assert.ok(lobbyText.indexOf("Play slots") >= 2500, "the menu runs past 2,500 characters");
+      const count = (t) => (t.match(/\bterms?\b|\bconditions?\b/gi) || []).length;
+      assert.equal(count(lobbyText), 10, "the lobby's footer holds 10 terms words");
       const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "/terms-and-conditions", accept: () => true }) });
       assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
       assert.ok(!read.includes("/spotsbook-terms-and-conditions"), "the sportsbook's terms were never read");
@@ -721,4 +739,30 @@ test("namesProduct: a product or promotion named by the caption or the path, unl
   assert.equal(n("Casino & Sports Terms", "/terms-and-conditions"), false);
   assert.equal(n("Terms and Conditions", "/terms-and-conditions"), false);
   assert.equal(n("Terms", "/casino/sportsbook-terms"), false, "the path says casino");
+});
+
+// clubscasino.com: the terms page is a stub under the lobby's own header and footer that only links its PDF. Its path
+// is not one the guess phase tries, so only the hop from the link's own page finds the document.
+test("a stub that shows the lobby with a link to the terms document is hopped from, not dropped as the lobby shell", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const lobbyHtml = LOBBY(`<a href="/info/tos-page">Terms of Use</a>`);
+      const stub = lobbyHtml.replace("<html>", "<html><head><title>Terms of Use</title></head>").replace("</footer>", `<a href="/docs/terms.pdf">Download the Terms of Use</a></footer>`);
+      const pdf = termsPdf();
+      await page.route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/") return r.fulfill({ status: 200, contentType: "text/html", body: lobbyHtml });
+        if (p === "/info/tos-page") return r.fulfill({ status: 200, contentType: "text/html", body: stub });
+        if (p === "/docs/terms.pdf") return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf });
+        return r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(r.tried.includes("https://casino.test/info/tos-page (lobby shell)"), r.tried.join(" | "));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.href, "https://casino.test/docs/terms.pdf");
+    } finally { await browser.close(); }
+  });
 });
