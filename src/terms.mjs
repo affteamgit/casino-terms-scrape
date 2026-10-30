@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
+import { termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -375,7 +375,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     } catch (e) { failed(e); asked = true; }
   }
   if (!entries.length && !jevEnabled()) note("off"); // nothing to ask about, and no key either
-  const jevLinks = picks.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true }));
+  // A pick keeps its heuristic score (`hscore`, null when the heuristic would not have tried it): a pick the heuristic
+  // does not rank as the general terms is accepted on Jev's page judgment, not on the pattern (see jevOnly).
+  const jevLinks = picks.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true, hscore: termsScore({ href: p.href, text: p.text, footer: p.in_footer }, lobby.url) }));
   cands = [...jevLinks, ...cands.filter((c) => !jevLinks.some((j) => j.href === c.href))];
   const jevTexts = picks.filter((p) => p.kind === "text").map((p) => p.text);
   lobby = { ...lobby, clickables: [...lobby.clickables.filter((c) => jevTexts.includes(c.text)), ...lobby.clickables.filter((c) => !jevTexts.includes(c.text))] };
@@ -383,8 +385,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // Pages Jev has judged in this search, by URL: a candidate is judged once.
   const judged = new Map();
   // `fast: false` skips the pattern's fast accept, so only Jev can accept the text (and without Jev it is rejected).
-  const isTermsPage = async (text, meta, { fast = true } = {}) => {
-    if (fast && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
+  // `jevOnly`: a link the heuristic does not rank as the general terms (see jevOnly below): Jev decides while it can be
+  // asked; with no key, or once a call has failed, the pattern decides as it always did.
+  const isTermsPage = async (text, meta, { fast = true, jevOnly = false } = {}) => {
+    const jevUp = jevEnabled() && !jevDown;
+    if (fast && (!jevOnly || !jevUp) && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
     if (jevDown || text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
     // Keyed on the text's length too: an in-place click leaves the URL at the lobby's, and each opens a different document.
     const jk = `${meta.url}|${text.length}`;
@@ -395,10 +400,13 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
         note(pageSummary(answers));
         dbg("jev page", meta.url, pageSummary(answers));
         return acceptsPage(answers);
-      } catch (e) { failed(e); return false; }
+      } catch (e) { failed(e); return jevOnly && fast && readsLikeTerms(text); } // Jev failed: the pattern decides
     })());
     return judged.get(jk);
   };
+  // The pattern's fast accept is for links the heuristic scores above 0. A promotion's terms (score 0 or less) and a Jev
+  // pick the heuristic scores 0 or less, or would not have tried, need Jev's page judgment while Jev is up.
+  const jevOnly = (c) => (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
   const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF is fetched as bytes and read in Node. page.request shares the session's cookies but not its proxy: it
@@ -410,7 +418,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       const body = await r.body();
       if (body.length > 20 * 1048576) throw new Error("over 20 MB");
       const text = await pdfText(body);
-      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] });
+      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, { jevOnly: jevOnly(c) });
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };
       tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
@@ -479,7 +487,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
-    const good = d.ok && await isTermsPage(d.text, await pageMeta());
+    const good = d.ok && await isTermsPage(d.text, await pageMeta(), { jevOnly: jevOnly(c) });
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
     if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried });
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);

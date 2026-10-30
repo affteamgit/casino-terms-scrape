@@ -450,9 +450,11 @@ const fakeAsk = ({ pick = null, accept = () => false, log = [] } = {}) => async 
   return { is_terms: { noul: accept(state.page) ? 0.95 : 0.05 } };
 };
 // A site on casino.test: `pages` maps a path to its HTML; any other path fails to load, so the guess phase is quick.
+// Aborted as "aborted": an aborted navigation leaves the page where it was, where any other error shows Chrome's
+// error page and interrupts the next navigation.
 const site = (page, pages) => page.route("https://casino.test/**", (r) => {
   const p = new URL(r.request().url()).pathname;
-  return pages[p] ? r.fulfill({ status: 200, contentType: "text/html", body: pages[p] }) : r.abort();
+  return pages[p] ? r.fulfill({ status: 200, contentType: "text/html", body: pages[p] }) : r.abort("aborted");
 });
 const TERMS_PAGE = (title = "Terms and Conditions") => `<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("")}</body></html>`;
 const LOBBY = (footer, main = "") => `<!doctype html><html><body><main><p>${"Play slots and live games every day. ".repeat(30)}</p>${main}</main><footer>${footer}<p>${"Licensed and regulated. ".repeat(6)}</p></footer></body></html>`;
@@ -489,6 +491,43 @@ test("an in-place document with no terms heading is accepted on Jev's judgment",
       assert.equal(r.via, "click", r.tried.join(" | "));
       assert.match(r.text, /These terms and conditions govern/);
       assert.ok(log.includes("page"), "Jev judged the page");
+    } finally { await browser.close(); }
+  });
+});
+
+// A promotion's terms page that reads like terms: long, and full of "terms".
+const PROMO_TERMS_PAGE = `<!doctype html><html><head><title>Bonus Terms</title></head><body><h1>Bonus Terms</h1>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${SECTION(i)}</p>`).join("")}</body></html>`;
+
+test("a promotion's terms link is not fast-accepted when Jev can judge it; without Jev, or when Jev fails, the pattern decides as before", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await site(page, { "/": LOBBY("", `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE });
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const off = await withoutJev(() => search({ notes: [] }));
+    assert.equal(off.via, "promo-terms", off.tried.join(" | "));
+    const log = [];
+    const no = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
+    assert.equal(no.text, "", `accepted ${no.href}`);
+    assert.ok(log.includes("page"), "Jev judged the page");
+    const failing = async (state, questions) => { if (questions.is_terms) throw new Error("boom"); return fakeAsk()(state, questions); };
+    const down = await withJevKey(() => search({ notes: [], ask: failing }));
+    assert.equal(down.via, "promo-terms", down.tried.join(" | "));
+  } finally { await browser.close(); }
+});
+
+test("a Jev pick the heuristic does not score is accepted on Jev's page judgment, not on the pattern", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`), "/info/page-7": TERMS_PAGE() });
+      const search = async (accept) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "/info/page-7", accept }) }); };
+      const yes = await search(() => true);
+      assert.equal(yes.href, "https://casino.test/info/page-7", yes.tried.join(" | "));
+      assert.equal(yes.via, "jev");
+      const no = await search(() => false);
+      assert.equal(no.text, "", `accepted ${no.href}`);
     } finally { await browser.close(); }
   });
 });
