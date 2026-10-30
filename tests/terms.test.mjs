@@ -399,6 +399,9 @@ test("fastInPlace: an in-place document is fast-accepted only under a general-te
   assert.equal(fastInPlace(`×Close\nGeneral Terms and Conditions\n${body}`), true, "two buttons rendered without a space");
   assert.equal(fastInPlace(`General Terms and Conditions\nThese terms cover your account. Free spin offers and free spins winnings follow the general rules.`), true, "'free spin' and 'free spins' are one promotion word");
   assert.equal(fastInPlace(`${"These terms govern your account with the operator. ".repeat(3)}\n${"Deposits and withdrawals are processed daily. ".repeat(3)}`), false, "no short heading line");
+  assert.equal(fastInPlace(`Terms and Conditions\nWelcome Offer\n${body}`), false, "a promotion named on the line under the terms heading");
+  assert.equal(fastInPlace(`Terms and Conditions\n100% bonus up to 500 EUR\n${body}`), false, "a bonus on the line under the terms heading");
+  assert.equal(fastInPlace(`Home\nTerms and Conditions\n${body}`), true, "a Home button is UI noise");
 });
 
 test("readLobby: promotion captions are not clickables, but terms whose name merely contains such letters are", async () => {
