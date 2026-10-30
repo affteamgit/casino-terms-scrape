@@ -387,6 +387,7 @@ test("marketplaceLobby: a casino that links its own terms is not a listing, what
 });
 
 test("fastInPlace: an in-place document is fast-accepted only under a general-terms heading with no promotion in sight", () => {
+  assert.equal(fastInPlace("General Terms and Conditions\nLast updated 1.10.2026\n1. Introduction\n2. Your Account\n3. Bonuses\n1. Introduction\nThese terms govern your account."), true, "a contents list's section titles are not a promotion");
   const body = "1. These terms govern your account, deposits and withdrawals with the operator.\n2. Eligibility.";
   assert.equal(fastInPlace(`General Terms and Conditions\n${body}`), true);
   assert.equal(fastInPlace(`×\nClose\nNEW\n29.10.2026\nGeneral Terms and Conditions\n${body}`), true, "noise lines before the title");
@@ -604,8 +605,10 @@ test("a PDF is fetched inside the page when it is same-origin, and from Node whe
   });
 });
 
-test("isShellOf: the lobby's own text, or its opening at nearly its length; a page that only shares its header is not", () => {
-  const lobby = ("Casino Live Sports Promotions VIP Login Register ".repeat(8) + "Spin the reels and win big today. ".repeat(80)).trim();
+test("isShellOf: the lobby's own text, or its opening with no more terms words than the lobby; a page that only shares its header is not", () => {
+  const header = "Casino Live Sports Promotions VIP Login Register ".repeat(8), grid = "Spin the reels and win big today. ".repeat(80);
+  const footer = " Terms and Conditions. Privacy Policy. Responsible Gaming. Licensed and regulated.";
+  const lobby = (header + grid + footer).trim();
   const ref = { len: lobby.length, fp: fingerprint(lobby) };
   assert.equal(isShellOf(lobby, ref, lobby), true, "the same text");
   assert.equal(isShellOf(lobby.slice(0, 2000) + " a ticker".repeat(30), ref, lobby), true, "the same first 2,000 characters");
@@ -613,6 +616,11 @@ test("isShellOf: the lobby's own text, or its opening at nearly its length; a pa
   assert.equal(isShellOf(lobby.slice(0, 300) + " General Terms and Conditions ".repeat(Math.ceil(lobby.length * 2 / 30)), ref, lobby), false, "same header, three times as long");
   assert.equal(isShellOf("x".repeat(lobby.length), ref, lobby), false, "same length, another opening");
   assert.equal(isShellOf("anything", { len: 0, fp: "" }, ""), false, "no lobby text");
+  const terms = " These terms and conditions govern your account and the agreement with the operator.";
+  const near = lobby.slice(0, 300) + terms.repeat(Math.ceil((lobby.length * 1.05 - 300) / terms.length));
+  assert.ok(Math.abs(near.length - lobby.length * 1.05) < terms.length);
+  assert.equal(isShellOf(near, ref, lobby), false, "a terms page under the lobby's header at 1.05 times its length");
+  assert.equal(isShellOf((header + grid.slice(0, grid.length / 2) + "Page not found." + footer).trim(), ref, lobby), true, "a 404 shell: the header, half the grid and the footer");
 });
 
 // A lobby whose header holds more than 300 characters of navigation, and a terms page under the same header.
@@ -631,6 +639,20 @@ test("a footer link to a terms page that opens with the lobby's header is the te
       assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
       assert.equal(r.text.slice(0, 300), lobbyText.slice(0, 300), "the page opens with the lobby's header");
       assert.ok(r.text.length > lobbyText.length * 3);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a Jev pick that is also a heuristic candidate keeps that candidate's score: a promotion's terms link is still judged by Jev", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      // The same href in the page (score 0, the candidate kept) and in the footer (score 2, what the pick would score alone).
+      await site(page, { "/": LOBBY(`<a href="/bonus-terms">Bonus Terms</a>`, `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "/bonus-terms", accept: () => false }) });
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
     } finally { await browser.close(); }
   });
 });

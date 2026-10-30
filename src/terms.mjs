@@ -140,7 +140,8 @@ const noise = (l) => UPDATE_STAMP.test(l) || l.split(/[^\p{L}]+/u).filter(Boolea
 export function fastInPlace(doc) {
   const lines = doc.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).filter((l) => l.length <= 80);
   const at = lines.findIndex((l) => !noise(l)), title = lines[at];
-  const under = lines.slice(at + 1).filter((l) => !noise(l)).join("\n");
+  // A contents list's section titles ("3. Bonuses") are the document's own sections, not a promotion's name.
+  const under = lines.slice(at + 1).filter((l) => !noise(l) && !/^\d+[.)]?\s/.test(l)).join("\n");
   // Singular and plural are one word ("free spin", "free spins").
   const promoWords = new Set((doc.slice(0, 300).match(new RegExp(PROMO_OPENING.source, "gi")) || []).map((w) => w.toLowerCase().replace(/\s+/g, " ").replace(/s$/, "")));
   return !!title && TERMS_TEXT.test(title) && !PROMO_OPENING.test(title) && !PROMO_OPENING.test(under) && promoWords.size < 2;
@@ -152,18 +153,20 @@ export function addedText(after, before) {
 }
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 /**
+ * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? Stricter
+ * than sameAsLobby, since a real terms page often opens with the lobby's header: the same first 2,000 characters, or
+ * the same first 300 with no more than five terms words (TERMS_WORDS, as readsLikeTerms counts them) beyond the
+ * lobby's own. A shorter 404 shell (the header, part of the grid, the footer) is one; a terms page under the header is not.
+ */
+const termsWords = (t) => (t.match(TERMS_WORDS) || []).length;
+export const isShellOf = (text, ref, refText) => !!ref.len && (fingerprint(text) === ref.fp
+  || (text.slice(0, 300) === refText.slice(0, 300) && termsWords(text) <= termsWords(refText) + 5));
+/**
  * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
  * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
  * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
  * first 500 characters, for a lobby whose text grew a little since it was measured.
  */
-/**
- * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? Stricter
- * than sameAsLobby, since a real terms page often opens with the lobby's header: the same first 2,000 characters, or
- * the same first 300 together with a length within 10% of the lobby's. Either rule alone is not enough.
- */
-export const isShellOf = (text, ref, refText) => !!ref.len && (fingerprint(text) === ref.fp
-  || (text.slice(0, 300) === refText.slice(0, 300) && Math.abs(text.length - ref.len) <= ref.len * 0.1));
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
 // Single-page lobbies render their footer late, some only once it is scrolled into view (betportal.com: ~7 s after
@@ -384,9 +387,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     } catch (e) { failed(e); asked = true; }
   }
   if (!entries.length && !jevEnabled()) note("off"); // nothing to ask about, and no key either
-  // A pick keeps its heuristic score (`hscore`, null when the heuristic would not have tried it): a pick the heuristic
+  // A pick keeps its heuristic score (`hscore`: the candidate's own when the heuristic has the same href; else what it
+  // would score alone, null when the heuristic would not have tried it): a pick the heuristic
   // does not rank as the general terms is accepted on Jev's page judgment, not on the pattern (see jevOnly).
-  const jevLinks = picks.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true, hscore: termsScore({ href: p.href, text: p.text, footer: p.in_footer }, lobby.url) }));
+  const jevLinks = picks.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true, hscore: cands.find((c) => c.href === p.href)?.score ?? termsScore({ href: p.href, text: p.text, footer: p.in_footer }, lobby.url) }));
   cands = [...jevLinks, ...cands.filter((c) => !jevLinks.some((j) => j.href === c.href))];
   const jevTexts = picks.filter((p) => p.kind === "text").map((p) => p.text);
   lobby = { ...lobby, clickables: [...lobby.clickables.filter((c) => jevTexts.includes(c.text)), ...lobby.clickables.filter((c) => !jevTexts.includes(c.text))] };
@@ -497,6 +501,16 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return r;
   };
   let unblocked = false;
+  // Lifts the blocklist once per casino and reads a strong candidate (a Jev pick, or a score of 5 or more) again;
+  // undefined when it does not apply. The retry's own hop and hub steps run on its fresh read: its result stands, so
+  // they are not spent twice.
+  const retryUnblocked = async (c) => {
+    if (!unblock || unblocked || c.english || hopping || !(c.jev || c.score >= 5)) return undefined;
+    unblocked = true;
+    if (!(await unblock().catch(() => false))) return undefined;
+    tried.push(`${c.href} again without the blocklist`);
+    return tryLink(c);
+  };
   const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
   const tryLink = async (c) => {
     visited.add(c.href);
@@ -514,7 +528,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
     // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
     // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
-    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) { tried.push(`${c.href} (lobby shell)`); return null; }
+    // A strong candidate may show the shell because the blocklist broke its app: it gets the unblocked retry first.
+    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) { tried.push(`${c.href} (lobby shell)`); return (await retryUnblocked(c)) || null; }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
@@ -525,11 +540,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
     // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
     // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
-    if (unblock && !unblocked && !c.english && !hopping && d.note !== "wall" && (c.jev || c.score >= 5)) {
-      unblocked = true;
-      // The retry's own hop and hub steps run on its fresh read: its result stands, so they are not spent twice.
-      if (await unblock().catch(() => false)) { tried.push(`${c.href} again without the blocklist`); return tryLink(c); }
-    }
+    if (d.note !== "wall") { const r = await retryUnblocked(c); if (r !== undefined) return r; }
     // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
     return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
   };
