@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
+import { termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -184,4 +184,12 @@ test("a product named in the page's own name ranks below the general terms and /
     assert.ok(score(p) < score("terms-and-conditions"), `${p} below the general terms`);
     assert.ok(score(p) < score("legal"), `${p} below /legal`);
   }
+});
+
+test("a lookalike domain is not the casino's own; a true subdomain is", () => {
+  assert.equal(termsScore({ text: "Terms", href: "https://evilx.com/terms", footer: true }, "https://x.com/"), null);
+  assert.ok(termsScore({ text: "Terms", href: "https://cdn.x.com/terms", footer: true }, "https://x.com/") > 0, "a subdomain counts");
+  const links = [L("Payments", "https://evilx.com/payments"), L("KYC", "https://evilx.com/kyc")];
+  assert.deepEqual(otherDocs(links, "https://x.com/"), []);
+  assert.deepEqual(otherDocs([...links, L("Payments", "https://cdn.x.com/payments")], "https://x.com/"), [{ kind: "payments", href: "https://cdn.x.com/payments" }]);
 });

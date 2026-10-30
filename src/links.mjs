@@ -31,7 +31,7 @@ export function termsScore(l, pageUrl) {
   // The path's own name says terms: the caption cannot reject it as privacy (horseshoe's "Privacy Policy" caption).
   const strong = STRONG_TERMS_PATH.test(name);
   const inPath = TERMS_PATH.test(p), inText = TERMS_TEXT.test(text);
-  const own = host(l.href).endsWith(registrable(host(pageUrl)));
+  const own = withinDomain(host(l.href), registrable(host(pageUrl)));
   if (!own && !(l.footer && inText && (isPdf(l.href) || FILE_HOST.test(host(l.href))))) return null;
   if (!inPath && !inText) return null;
   // Judged on the link text and the page's own name: 777's User Agreement lives under /security-and-privacy/.
@@ -59,7 +59,7 @@ export function termsCandidates(links, pageUrl) {
 
 /** One payments and one KYC link (the casino's own pages), skipping URLs already taken. */
 export function otherDocs(links, pageUrl, taken = []) {
-  const own = (l) => /^https?:/i.test(l.href) && host(l.href).endsWith(registrable(host(pageUrl))) && !isHome(l.href);
+  const own = (l) => /^https?:/i.test(l.href) && withinDomain(host(l.href), registrable(host(pageUrl))) && !isHome(l.href);
   const picked = [];
   for (const [kind, re] of [["payments", PAYMENTS], ["kyc", KYC]]) {
     const hit = links.find((l) => own(l) && (re.test(l.text) || re.test(path(l.href))) && !/privacy|cookie|responsible|bonus|affiliate/i.test(l.text + path(l.href)) && !taken.includes(l.href) && !picked.some((p) => p.href === l.href));

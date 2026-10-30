@@ -587,7 +587,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   }
   // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
   // terms): scan it, read-only, when the lobby gave nothing.
-  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && host(l.href).endsWith(registrable(host(lobby.url))) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
+  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && withinDomain(host(l.href), registrable(host(lobby.url))) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
   if (signup) {
     try {
       await page.goto(signup.href, { waitUntil: "domcontentloaded", timeout: 30000 });
