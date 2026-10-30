@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
@@ -341,6 +341,14 @@ export const sitemapChildren = (locs) => locs.filter((l) => !/product|game|slot|
 /** Up to four sitemap locations whose path names the general terms. */
 export const sitemapTerms = (locs) => locs.filter((l) => TERMS_URL.test(urlPath(l)) && !NOT_TERMS_URL.test(urlPath(l))).slice(0, 4);
 
+// A caption that names a product's or a promotion's terms; a path names a product with PRODUCT (links.mjs).
+const PRODUCT_CAPTION = /\b(bonus(es)?|promotions?|sportsbook|sports betting|poker|bingo|lottery)\b/i;
+/** Does a link's caption or path name a product or a promotion, without also saying casino? */
+export function namesProduct(l) {
+  const text = l.text || "", words = urlPath(l.href || "").replace(/[-_/.#]/g, " ");
+  return (!/casino/i.test(text) && (PRODUCT.test(text) || PRODUCT_CAPTION.test(text))) || (!/casino/i.test(words) && PRODUCT.test(words));
+}
+
 /** The guess phase's URLs in order: the sitemap's terms URLs, the sibling guesses, then the common paths. */
 export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "" }) =>
   [...sitemapTerms(sitemapLocs), ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
@@ -420,8 +428,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return judged.get(jk);
   };
   // The pattern's fast accept is for links the heuristic scores above 0. A promotion's terms (score 0 or less) and a Jev
-  // pick the heuristic scores 0 or less, or would not have tried, need Jev's page judgment while Jev is up.
-  const jevOnly = (c) => (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
+  // pick the heuristic scores 0 or less, or would not have tried, need Jev's page judgment while Jev is up; so does a
+  // link whose caption or path names a product or a promotion without also saying casino (elarabet's "Sportsbook Terms
+  // & Conditions" read like terms and were stored as the general terms).
+  const jevOnly = (c) => namesProduct(c) || (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
   const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read

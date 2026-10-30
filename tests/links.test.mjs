@@ -201,3 +201,14 @@ test("host: the web address's host without www, lowercased; nothing for another 
   assert.equal(host("chrome-error://chromewebdata/"), "");
   assert.equal(host("not a url"), "");
 });
+
+test("a caption that names a product without the casino ranks below the general terms (elarabet); 'Casino & Sports Terms' does not", () => {
+  const page = "https://elarabet.com/";
+  const general = termsScore(L("Terms and Conditions", "https://elarabet.com/terms-and-conditions", true), page);
+  const sports = termsScore(L("Sportsbook Terms & Conditions", "https://elarabet.com/spotsbook-terms-and-conditions", true), page);
+  assert.equal(sports, general - 3, "the caption takes the product penalty the misspelled path escapes");
+  const c = termsCandidates([L("Sportsbook Terms & Conditions", "https://elarabet.com/spotsbook-terms-and-conditions", true), L("Terms and Conditions", "https://elarabet.com/terms-and-conditions", true)], page);
+  assert.equal(c[0].href, "https://elarabet.com/terms-and-conditions");
+  assert.equal(termsScore(L("Casino & Sports Terms", "https://elarabet.com/terms-and-conditions", true), page), general, "a caption that also says casino keeps its score");
+  assert.equal(termsScore(L("Poker Terms", "https://x.com/poker/terms", true), "https://x.com/"), termsScore(L("Terms", "https://x.com/poker/terms", true), "https://x.com/") , "caption and path naming the product: one penalty");
+});

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -692,4 +692,33 @@ test("a terms page under the lobby's long menu (the same first 2,000 characters)
       assert.ok(!read.includes("/spotsbook-terms-and-conditions"), "the sportsbook's terms were never read");
     } finally { await browser.close(); }
   });
+});
+
+test("a link whose caption names a product is not fast-accepted while Jev is up; without Jev the pattern decides as before", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    // The general terms do not load (any path not listed fails), so the sportsbook's terms are the next candidate.
+    await site(page, { "/": LOBBY(ELARA_FOOTER), "/spotsbook-terms-and-conditions": TERMS_PAGE("Sportsbook Terms and Conditions") });
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const log = [];
+    const no = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
+    assert.equal(no.text, "", `accepted ${no.href}`);
+    assert.ok(log.includes("page"), "Jev judged the page");
+    const off = await withoutJev(() => search({ notes: [] }));
+    assert.equal(off.href, "https://casino.test/spotsbook-terms-and-conditions", off.tried.join(" | "));
+    const yes = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => true }) }));
+    assert.equal(yes.href, "https://casino.test/spotsbook-terms-and-conditions", yes.tried.join(" | "));
+  } finally { await browser.close(); }
+});
+
+test("namesProduct: a product or promotion named by the caption or the path, unless it also says casino", () => {
+  const n = (text, path) => namesProduct({ text, href: `https://x.com${path}` });
+  assert.equal(n("Sportsbook Terms & Conditions", "/spotsbook-terms-and-conditions"), true);
+  assert.equal(n("Terms", "/poker/terms"), true);
+  assert.equal(n("Bonus Terms", "/terms"), true);
+  assert.equal(n("Promotions T&Cs", "/terms"), true);
+  assert.equal(n("Casino & Sports Terms", "/terms-and-conditions"), false);
+  assert.equal(n("Terms and Conditions", "/terms-and-conditions"), false);
+  assert.equal(n("Terms", "/casino/sportsbook-terms"), false, "the path says casino");
 });

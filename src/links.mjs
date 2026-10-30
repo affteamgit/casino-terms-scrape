@@ -7,7 +7,7 @@ export const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement
 // horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
 const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
 // A product's own terms: the casino's general terms rank above them.
-const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
+export const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
 const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
@@ -39,9 +39,10 @@ export function termsScore(l, pageUrl) {
   if (NOT_TERMS.test(strong ? name : text + " " + name)) return null;
   let s = (inPath ? 5 : 0) + (inText ? 3 : 0);
   if (strong) s += 1; // named as the general terms, ahead of a bare /legal or /rules page
-  // A product's terms (/poker/terms, /sportsbook-terms-and-conditions) rank below the general terms. Read on the path's
-  // words only: a caption that names products ("Casino & Sports Terms" -> /terms-and-conditions) says nothing about them.
-  if (PRODUCT.test(p.replace(/[-_/.#]/g, " "))) s -= 3;
+  // A product's terms (/poker/terms, /sportsbook-terms-and-conditions) rank below the general terms, named by the
+  // path's words or by a caption that does not also say casino: elarabet's "Sportsbook Terms & Conditions" links a
+  // misspelled /spotsbook-terms-and-conditions, while "Casino & Sports Terms" -> /terms-and-conditions is the general terms.
+  if (PRODUCT.test(p.replace(/[-_/.#]/g, " ")) || (PRODUCT.test(text) && !/casino/i.test(text))) s -= 3;
   if (PROMO.test(both)) s = Math.min(s - 6, 0); // a promotion's terms never rank as the general terms
   if (l.footer) s += 2;
   if (!own) s -= 3; // a PDF on a file host is the terms only when nothing on the casino's own domain is
