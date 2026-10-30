@@ -485,6 +485,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
+    // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
+    if (isLobby(d.text) || (d.hidden && sameAsLobby(d.text, lobbyHidden))) { tried.push(`${c.href} (lobby shell)`); return null; }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.

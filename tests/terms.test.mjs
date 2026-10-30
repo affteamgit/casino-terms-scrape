@@ -534,3 +534,18 @@ test("a Jev pick the heuristic does not score is accepted on Jev's page judgment
     } finally { await browser.close(); }
   });
 });
+
+test("a footer link that an app routes to its lobby shell is not the terms, even when the shell's hidden text reads like terms", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const body = SHELL.replace("</body>", `<footer><a href="/terms">Terms and Conditions</a><p>${"Licensed and regulated. ".repeat(6)}</p></footer></body>`);
+      await page.route("https://casino.test/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body }));
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+      assert.ok(r.tried.includes("https://casino.test/terms (lobby shell)"), r.tried.join(" | "));
+    } finally { await browser.close(); }
+  });
+});
