@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -601,5 +601,36 @@ test("a PDF is fetched inside the page when it is same-origin, and from Node whe
         else assert.deepEqual(hits.map((h) => h.mode), ["cors", ""], "the page's request is refused by CORS; Node's follows");
       }
     } finally { await browser.close(); server.close(); }
+  });
+});
+
+test("isShellOf: the lobby's own text, or its opening at nearly its length; a page that only shares its header is not", () => {
+  const lobby = ("Casino Live Sports Promotions VIP Login Register ".repeat(8) + "Spin the reels and win big today. ".repeat(80)).trim();
+  const ref = { len: lobby.length, fp: fingerprint(lobby) };
+  assert.equal(isShellOf(lobby, ref, lobby), true, "the same text");
+  assert.equal(isShellOf(lobby.slice(0, 2000) + " a ticker".repeat(30), ref, lobby), true, "the same first 2,000 characters");
+  assert.equal(isShellOf(lobby.slice(0, 300) + "x".repeat(Math.round(lobby.length * 0.08)) + lobby.slice(300), ref, lobby), true, "same opening, 8% longer");
+  assert.equal(isShellOf(lobby.slice(0, 300) + " General Terms and Conditions ".repeat(Math.ceil(lobby.length * 2 / 30)), ref, lobby), false, "same header, three times as long");
+  assert.equal(isShellOf("x".repeat(lobby.length), ref, lobby), false, "same length, another opening");
+  assert.equal(isShellOf("anything", { len: 0, fp: "" }, ""), false, "no lobby text");
+});
+
+// A lobby whose header holds more than 300 characters of navigation, and a terms page under the same header.
+const HEADER = `<header><nav>${Array.from({ length: 40 }, (_, i) => `<a href="/games/${i}">Game category ${i}</a>`).join(" ")}</nav></header>`;
+
+test("a footer link to a terms page that opens with the lobby's header is the terms, not the lobby shell", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const terms = TERMS_PAGE().replace("<body>", `<body>${HEADER}`);
+      await site(page, { "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a>`).replace("<body>", `<body>${HEADER}`), "/terms-and-conditions": terms });
+      await page.goto("https://casino.test/");
+      const lobbyText = await page.evaluate(() => document.body.innerText);
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.equal(r.text.slice(0, 300), lobbyText.slice(0, 300), "the page opens with the lobby's header");
+      assert.ok(r.text.length > lobbyText.length * 3);
+    } finally { await browser.close(); }
   });
 });

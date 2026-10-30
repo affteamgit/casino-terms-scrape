@@ -157,6 +157,13 @@ export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
  * the same first 2,000 characters; a length within 5% of the lobby's; and (deliberately, beyond the brief) the same
  * first 500 characters, for a lobby whose text grew a little since it was measured.
  */
+/**
+ * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? Stricter
+ * than sameAsLobby, since a real terms page often opens with the lobby's header: the same first 2,000 characters, or
+ * the same first 300 together with a length within 10% of the lobby's. Either rule alone is not enough.
+ */
+export const isShellOf = (text, ref, refText) => !!ref.len && (fingerprint(text) === ref.fp
+  || (text.slice(0, 300) === refText.slice(0, 300) && Math.abs(text.length - ref.len) <= ref.len * 0.1));
 export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === ref.fp || Math.abs(text.length - ref.len) <= ref.len * 0.05 || (ref.fp.length >= 200 && fingerprint(text).startsWith(ref.fp.slice(0, 500))));
 
 // Single-page lobbies render their footer late, some only once it is scrolled into view (betportal.com: ~7 s after
@@ -506,7 +513,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
     // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
-    if (isLobby(d.text) || (d.hidden && sameAsLobby(d.text, lobbyHidden))) { tried.push(`${c.href} (lobby shell)`); return null; }
+    // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
+    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) { tried.push(`${c.href} (lobby shell)`); return null; }
     if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
     // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
     // collapsed section and read again.
