@@ -7,6 +7,7 @@ import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
 import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
 import { exitLookup } from "./exit.mjs";
+import { sessions, withBudget } from "./budget.mjs";
 import { sleep, host, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
@@ -131,8 +132,11 @@ async function installBlocklist(page) {
   return meter;
 }
 
+// Every open session, by job id, so a casino that runs past its budget has its browser closed (budget.mjs).
+const live = sessions();
 async function attempt(job, url, country, type) {
   const browser = await connect(country, type);
+  await live.add(job.id, browser); // a casino already timed out: closed, and this throws
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext({ locale: "en-US" }));
     const page = await context.newPage();
@@ -198,7 +202,7 @@ async function attempt(job, url, country, type) {
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
     return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
-  } finally { await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
+  } finally { live.remove(job.id, browser); await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
 async function run(job) {
@@ -222,6 +226,7 @@ async function run(job) {
     let walls = 0;
     for (const c of phase.countries) {
       if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
+      if (live.ended(job.id)) break outer; // timed out: its row is written, no more sessions
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
       mbTotal += r.mb || 0;
@@ -297,10 +302,9 @@ async function worker() {
     const job = jobs[next++];
     const t0 = Date.now();
     const base = { id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, scraped_at: new Date().toISOString() };
-    const row = await Promise.race([
-      run(job).catch((e) => ({ ...base, status: "crash", error: clip(e.message, 200) })),
-      sleep(CASINO_BUDGET).then(() => ({ ...base, status: "timeout", error: `no result within ${CASINO_BUDGET / 60000} min` })),
-    ]);
+    // Past the budget the casino's open browser is closed (budget.mjs) and its row is a timeout.
+    const row = await withBudget(job.id, run(job).catch((e) => ({ ...base, status: "crash", error: clip(e.message, 200) })), CASINO_BUDGET,
+      live, () => ({ ...base, status: "timeout", error: `no result within ${CASINO_BUDGET / 60000} min` }));
     appendFileSync(OUT, stringify([COLUMNS.map((c) => row[c] ?? "")]));
     console.log(`[${++n}/${jobs.length}] ${job.id} ${job.casino} -> ${row.status} ${row.final_domain || ""} ${row.exit_country || ""} ${Math.round((Date.now() - t0) / 1000)}s ${row.mb || 0}MB`);
   }
