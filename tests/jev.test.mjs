@@ -120,8 +120,11 @@ test("termsLinkQuestions: no entries means no question (a Choice needs options)"
 });
 
 test("termsPageQuestion caps the text and headings; acceptsPage applies the threshold", () => {
-  const q = termsPageQuestion({ title: "Rules", headings: Array.from({ length: 40 }, (_, i) => `H${i}`), text: "t".repeat(9000) });
+  const q = termsPageQuestion({ url: "https://x.com/" + "p".repeat(300), title: "Rules", headings: Array.from({ length: 40 }, (_, i) => `H${i}`), text: "t".repeat(9000) });
   assert.equal(q.state.page.text.length, 6000);
+  assert.equal(q.state.page.url.length, 200, "the URL, capped, so Jev sees the path");
+  assert.deepEqual(Object.keys(q.state.page), ["url", "title", "headings", "text"]);
+  assert.equal(termsPageQuestion({ title: "T", text: "x" }).state.page.url, "", "no URL: empty");
   assert.equal(q.state.page.headings.length, 30);
   assert.equal(q.questions.is_terms.type, "noul");
   assert.equal(acceptsPage({ is_terms: { noul: 0.7 } }), true);
@@ -168,4 +171,12 @@ test("jevEnabled follows the key", () => {
     process.env.TYPESAFE_API_KEY = "k";
     assert.equal(jevEnabled(), true);
   } finally { if (saved === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = saved; }
+});
+
+test("termsPageQuestion: a product section's terms on a site with other products are not the general terms (elarabet's sportsbook)", () => {
+  const q = termsPageQuestion({ url: "https://elarabet.com/spotsbook-terms-and-conditions", title: "Sportsbook", headings: [], text: "x" });
+  assert.equal(q.state.page.url, "https://elarabet.com/spotsbook-terms-and-conditions");
+  assert.match(q.questions.is_terms.instructions, /govern the whole site \(an online casino, sportsbook or both\)/);
+  assert.match(q.questions.is_terms.criteria.false, /the terms of one product section \(sportsbook, poker, bingo, racing, live casino\) of a site that also offers other products/);
+  assert.match(q.questions.is_terms.criteria.true, /general terms and conditions, terms of service, terms of use or user agreement/, "true is unchanged");
 });

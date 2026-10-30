@@ -116,17 +116,21 @@ export const linkSummary = (answers) => {
   return `link:${fmt(answers.has_terms?.noul)}/${probs && typeof probs === "object" ? fmt(Math.max(0, ...Object.values(probs))) : "?"}`;
 };
 
-/** The page judgment: is this document the general terms. The opening of the page and its headings are enough. */
-export function termsPageQuestion({ title, headings, text }) {
+/**
+ * The page judgment: is this document the general terms of the whole site. The URL (so Jev sees the path), the opening
+ * of the page and its headings are enough. A product section's terms (elarabet's sportsbook terms read like general
+ * terms) are not.
+ */
+export function termsPageQuestion({ url, title, headings, text }) {
   return {
-    state: { page: { title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS) } },
+    state: { page: { url: clip(url, 200), title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS) } },
     questions: {
       is_terms: {
         type: "noul",
-        instructions: "Is `page` the general terms and conditions of an online casino or sportsbook?",
+        instructions: "Is `page` the general terms and conditions that govern the whole site (an online casino, sportsbook or both)?",
         criteria: {
           true: "the general terms and conditions, terms of service, terms of use or user agreement that govern a player's account, deposits, bets and withdrawals, shown in full or as its opening sections",
-          false: "a promotion's or bonus terms, a privacy or cookie policy, game or sports-betting rules, a help centre, a lobby, a registration form, or an error page",
+          false: "the terms of one product section (sportsbook, poker, bingo, racing, live casino) of a site that also offers other products, a promotion's or bonus terms, a privacy or cookie policy, game or sports-betting rules, a help centre, a lobby, a registration form, or an error page",
         },
       },
     },

@@ -145,10 +145,11 @@ knows the API.
 - **Page judgment** (`termsPageQuestion(page)`), used wherever `readsLikeTerms` is tested today (link candidates,
   clicks, guessed paths):
   - The regex `readsLikeTerms` stays as the fast accept. When it fails on a page of at least 1,500 characters that
-    is not a bot wall, Jev is asked a Noul "Is `page` the general terms and conditions of an online casino or
-    sportsbook?" with `false`: "a promotion's or bonus terms, a privacy or cookie policy, game or sports-betting
-    rules, a help centre, a lobby, or an error page". State: `{ page: { title, headings (≤ 30), text (first 6,000
-    chars) } }`. Accept at ≥ 0.7. One call per distinct URL and text length per casino.
+    is not a bot wall, Jev is asked a Noul "Is `page` the general terms and conditions that govern the whole site
+    (an online casino, sportsbook or both)?" with `false`: "the terms of one product section (sportsbook, poker,
+    bingo, racing, live casino) of a site that also offers other products, a promotion's or bonus terms, a privacy
+    or cookie policy, game or sports-betting rules, a help centre, a lobby, …, or an error page". State:
+    `{ page: { url (≤ 200 chars), title, headings (≤ 30), text (first 6,000 chars) } }`. Accept at ≥ 0.7. One call per distinct URL and text length per casino.
 
 - **Result columns.** A new `jev` column: `link:<noul>/<p of pick>` and `page:<noul>` when consulted, `off` when
   no key, `error:<message>` on failure. Everything else stays as it is.
