@@ -340,6 +340,7 @@ export const sitemapTerms = (locs) => locs.filter((l) => TERMS_URL.test(urlPath(
 export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "" }) =>
   [...sitemapTerms(sitemapLocs), ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
 
+const MAX_PDF = 20 * 1048576;
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 // `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
 // (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
@@ -411,15 +412,35 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const jevOnly = (c) => (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
   const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
-  // A PDF is fetched as bytes and read in Node. page.request shares the session's cookies but not its proxy: it
-  // leaves from this process (the VPN locally, the Actions runner on Browserless), which the file hosts allow.
+  // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read
+  // in Node. When the page may not read them (a file host without CORS headers, for one), page.request fetches them
+  // instead: it shares the session's cookies but not its proxy, and leaves from this process (the VPN locally, the
+  // Actions runner on Browserless), which the file hosts allow. Either way a file over 20 MB is not read.
+  const pdfBytes = async (url) => {
+    try {
+      const b64 = await page.evaluate(async ({ u, max }) => {
+        const r = await fetch(u, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) throw new Error("http " + r.status);
+        if (Number(r.headers.get("content-length") || 0) > max) return "";
+        const b = new Uint8Array(await r.arrayBuffer());
+        if (b.length > max) return "";
+        let s = "";
+        for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+        return btoa(s);
+      }, { u: url, max: MAX_PDF });
+      if (!b64) throw new Error("over 20 MB");
+      return Buffer.from(b64, "base64");
+    } catch (e) { if (/over 20 MB/.test(e.message)) throw e; } // anything else: Node fetches it
+    const r = await page.request.get(url, { timeout: 30000 });
+    if (!r.ok()) throw new Error(`http ${r.status()}`);
+    if (Number(r.headers()["content-length"] || 0) > MAX_PDF) throw new Error("over 20 MB");
+    const body = await r.body();
+    if (body.length > MAX_PDF) throw new Error("over 20 MB");
+    return body;
+  };
   const tryPdf = async (c) => {
     try {
-      const r = await page.request.get(c.href, { timeout: 30000 });
-      if (!r.ok()) throw new Error(`http ${r.status()}`);
-      const body = await r.body();
-      if (body.length > 20 * 1048576) throw new Error("over 20 MB");
-      const text = await pdfText(body);
+      const text = await pdfText(await pdfBytes(c.href));
       const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, { jevOnly: jevOnly(c) });
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };

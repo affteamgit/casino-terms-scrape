@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { chromium } from "playwright-core";
 import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder } from "../src/terms.mjs";
 
@@ -547,5 +548,57 @@ test("a footer link that an app routes to its lobby shell is not the terms, even
       assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
       assert.ok(r.tried.includes("https://casino.test/terms (lobby shell)"), r.tried.join(" | "));
     } finally { await browser.close(); }
+  });
+});
+
+// A PDF whose text reads like terms, built here (as in pdf.test.mjs) so the test needs no fixture file.
+function termsPdf() {
+  const lines = ["General Terms and Conditions", ...Array.from({ length: 40 }, (_, i) => `${i + 1}. These terms and conditions govern your account, deposits and withdrawals, rule ${i}.`)];
+  const stream = `BT /F1 10 Tf 20 800 Td 12 TL ${lines.map((l) => `(${l}) Tj T*`).join(" ")} ET`;
+  const objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  objs.forEach((o, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+test("a PDF is fetched inside the page when it is same-origin, and from Node when the page may not read it (CORS)", async () => {
+  const pdf = termsPdf(), hits = [];
+  const server = createServer((req, res) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/terms.pdf") {
+      hits.push({ host: req.headers.host, mode: req.headers["sec-fetch-mode"] || "" });
+      res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length });
+      return res.end(pdf);
+    }
+    if (u.pathname === "/") {
+      const href = u.searchParams.get("pdf") === "cross" ? `http://localhost:${port}/terms.pdf` : "/terms.pdf";
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(LOBBY(`<a href="${href}">Terms and Conditions</a>`));
+    }
+    res.writeHead(404, { "content-type": "text/html" });
+    res.end("<html><body>Not found</body></html>");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      for (const kind of ["same", "cross"]) {
+        hits.length = 0;
+        await page.goto(`http://127.0.0.1:${port}/?pdf=${kind}`);
+        const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+        assert.equal(r.pdf, true, `${kind}: ${r.tried.join(" | ")}`);
+        assert.match(r.text, /General Terms and Conditions/);
+        if (kind === "same") assert.deepEqual(hits.map((h) => h.mode), ["cors"], "one request, from the page");
+        else assert.deepEqual(hits.map((h) => h.mode), ["cors", ""], "the page's request is refused by CORS; Node's follows");
+      }
+    } finally { await browser.close(); server.close(); }
   });
 });
