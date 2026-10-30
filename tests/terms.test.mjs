@@ -428,3 +428,67 @@ test("guessOrder: the sitemap's terms URLs, then the sibling guesses, then the c
   assert.ok(Math.max(...sitemap) < Math.min(...siblings), "every sitemap URL before every sibling");
   assert.ok(Math.max(...siblings) < Math.min(...common), "every sibling before every common path");
 });
+
+// Jev, faked: `ask` stands in for askJev. A key is set so the code treats Jev as available; the fake never uses it.
+const withJevKey = async (fn) => {
+  const key = process.env.TYPESAFE_API_KEY;
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try { return await fn(); } finally { if (key === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = key; }
+};
+const withoutJev = async (fn) => {
+  const key = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try { return await fn(); } finally { if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
+};
+// `pick`: the path of the link Jev chooses (none: it sees no terms link); `accept(page)`: its page judgment. `log` records each question asked.
+const fakeAsk = ({ pick = null, accept = () => false, log = [] } = {}) => async (state, questions) => {
+  log.push(questions.has_terms ? "link" : "page");
+  if (questions.has_terms) {
+    const e = pick && state.links.find((l) => l.href.endsWith(pick));
+    return { has_terms: { noul: e ? 0.95 : 0.1 }, terms_link: { probabilities: e ? { [e.id]: 0.95 } : {} } };
+  }
+  return { is_terms: { noul: accept(state.page) ? 0.95 : 0.05 } };
+};
+// A site on casino.test: `pages` maps a path to its HTML; any other path fails to load, so the guess phase is quick.
+const site = (page, pages) => page.route("https://casino.test/**", (r) => {
+  const p = new URL(r.request().url()).pathname;
+  return pages[p] ? r.fulfill({ status: 200, contentType: "text/html", body: pages[p] }) : r.abort();
+});
+const TERMS_PAGE = (title = "Terms and Conditions") => `<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("")}</body></html>`;
+const LOBBY = (footer, main = "") => `<!doctype html><html><body><main><p>${"Play slots and live games every day. ".repeat(30)}</p>${main}</main><footer>${footer}<p>${"Licensed and regulated. ".repeat(6)}</p></footer></body></html>`;
+
+test("fetchTerms tries Jev's pick ahead of the scored anchors", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, {
+        "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a><a href="/legal/user-agreement">User Agreement</a>`),
+        "/terms-and-conditions": TERMS_PAGE(), "/legal/user-agreement": TERMS_PAGE("User Agreement"),
+      });
+      await page.goto("https://casino.test/");
+      const lobby = await readLobby(page, { quietMs: 2000 });
+      const jev = { notes: [], ask: fakeAsk({ pick: "/legal/user-agreement", accept: () => true }) };
+      const r = await fetchTerms(page, lobby, jev);
+      assert.equal(r.href, "https://casino.test/legal/user-agreement", r.tried.join(" | "));
+      assert.equal(r.via, "jev");
+      assert.ok(jev.notes.some((n) => /^link:0\.95/.test(n)), jev.notes.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("an in-place document with no terms heading is accepted on Jev's judgment", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(MODAL("", GENERAL));
+      const lobby = await readLobby(page, { quietMs: 2000 });
+      const log = [];
+      const r = await fetchTerms(page, lobby, { notes: [], ask: fakeAsk({ accept: (p) => /These terms and conditions govern/.test(p.text), log }) });
+      assert.equal(r.via, "click", r.tried.join(" | "));
+      assert.match(r.text, /These terms and conditions govern/);
+      assert.ok(log.includes("page"), "Jev judged the page");
+    } finally { await browser.close(); }
+  });
+});

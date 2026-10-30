@@ -340,9 +340,11 @@ export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang
 
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 // `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
-// (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document.
+// (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
+// said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
 export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } = {}) {
   const tried = [];
+  const ask = jev.ask || askJev;
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
   // Is this the lobby again? An app routes an unknown path (a guessed one, an invented /en/ variant) to its shell.
@@ -366,7 +368,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   if (entries.length) {
     try {
       const q = termsLinkQuestions(entries);
-      const answers = await askJev(q.state, q.questions);
+      const answers = await ask(q.state, q.questions);
       picks = jevPicks(answers, entries);
       note(linkSummary(answers));
       asked = true;
@@ -389,7 +391,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (!judged.has(jk)) judged.set(jk, (async () => {
       try {
         const q = termsPageQuestion({ ...meta, text });
-        const answers = await askJev(q.state, q.questions);
+        const answers = await ask(q.state, q.questions);
         note(pageSummary(answers));
         dbg("jev page", meta.url, pageSummary(answers));
         return acceptsPage(answers);
