@@ -67,6 +67,7 @@ if (process.argv.includes("--bytes")) {
   await cdp.send("Network.enable");
   const meta = new Map();
   cdp.on("Network.responseReceived", (e) => meta.set(e.requestId, { type: e.type, url: e.response.url, mime: e.response.mimeType }));
+  cdp.on("Network.webSocketFrameReceived", (e) => { const n = (e.response?.payloadData || "").length; bytes.total += n; bytes.n++; bytes.byType.WebSocket = (bytes.byType.WebSocket || 0) + n; bytes.byHost["(websocket frames)"] = (bytes.byHost["(websocket frames)"] || 0) + n; });
   cdp.on("Network.loadingFinished", (e) => {
     const m = meta.get(e.requestId); if (!m) return;
     const n = e.encodedDataLength || 0, h = (() => { try { return new URL(m.url).hostname; } catch { return "?"; } })();
@@ -94,6 +95,9 @@ try {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
     await sleep(3000);
   }
+  if (process.argv.includes("--frames")) console.log("frames:", page.frames().map((f) => (f === page.mainFrame() ? "[main] " : "[sub] ") + f.url().slice(0, 90)).join(" | "));
+  const hold = Number(arg("--hold", 0));
+  if (hold) { console.log(`holding ${hold}s with the lobby open`); const b0 = bytes.total; await sleep(hold * 1000); console.log(`  bytes during hold: ${((bytes.total - b0) / 1048576).toFixed(2)}MB (websocket so far ${((bytes.byType.WebSocket || 0) / 1048576).toFixed(2)}MB)`); }
   const body = await page.evaluate(() => document.body.innerText).catch(() => "");
   console.log("body head:", clip(body, 300));
   console.log("body tail:", clip(body.slice(-400), 400));

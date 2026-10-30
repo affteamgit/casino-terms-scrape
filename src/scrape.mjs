@@ -1,26 +1,41 @@
-// Scrapes one shard of out/jobs.json through Browserless: follows the tracking link (or domain), records where it
-// landed, from which country and IP, then reads the footer and the terms / payments / KYC pages and stores raw quotes.
-// Usage: BROWSERLESS_TOKEN=... node src/scrape.mjs [--shard 0 --shards 1] [--concurrency 2] [--ids id1,id2]
+// Scrapes one shard of out/jobs.json through the local Chrome or Browserless: follows the tracking link (or domain),
+// records where it landed, from which country and IP, then reads the footer and the terms / payments / KYC pages and
+// stores raw quotes.
+// Usage, local (the installed Chrome; the VPN decides the exit; keys in .env, PROXY_PLAN=local:no):
+//   node --env-file=.env src/scrape.mjs [--concurrency 6] [--ids id1,id2 [--force]]
+// Usage, Browserless:
+//   BROWSERLESS_TOKEN=... node src/scrape.mjs [--shard 0 --shards 1] [--concurrency 2] [--ids id1,id2 [--force]] [--deadline-minutes N]
+// --force re-runs the --ids casinos that already have a result.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
-import { termsCandidates, otherDocs, regionalSites, registrable } from "./links.mjs";
+import { host, termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { exitLookup } from "./exit.mjs";
+import { sessions, withBudget } from "./budget.mjs";
+import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
 const SHARDS = Number(arg("--shards", 1));
-const CONCURRENCY = Number(arg("--concurrency", 2));
-const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",")) : null;
+const IDS = arg("--ids", "") ? new Set(arg("--ids").split(",").map((s) => s.trim()).filter(Boolean)) : null;
+const FORCE = process.argv.includes("--force"); // with --ids: run them even when a previous result exists
 const DEADLINE = Number(arg("--deadline-minutes", 0)) > 0 ? Date.now() + Number(arg("--deadline-minutes")) * 60000 : Infinity; // no new casino is started after this
 const TOKEN = process.env.BROWSERLESS_TOKEN;
+// An error message may carry the session URL, token included. With no token (a local plan) there is nothing to hide:
+// replace(undefined, ...) would turn the word "undefined" into "***".
+const redact = (m) => (TOKEN ? m.split(TOKEN).join("***") : m);
 const REGION = process.env.BROWSERLESS_REGION || "production-sfo";
-// Exits are tried in phases: the datacenter proxy first (2 units per MB, and it tunnels to domains the residential
-// one refuses, such as bitstarz.com), then the residential proxy (6 units per MB) for casinos that block hosting IPs
-// (PlayGrand, Rokubet, BangaWin in the test set). Each phase lists its exit countries.
+// Exits are tried in phases. "local:no" launches the installed Chrome on this machine (the VPN decides the country;
+// the code is only a label for the rows); "datacenter:ca,de" is Browserless's datacenter proxy (2 units per MB, and
+// it tunnels to domains the residential one refuses, such as bitstarz.com); "residential:..." its residential proxy
+// (6 units per MB) for casinos that block hosting IPs (PlayGrand, Rokubet, BangaWin in the test set).
 const PROXY_PLAN = (process.env.PROXY_PLAN || `datacenter:ca,de;residential:${process.env.EXIT_COUNTRIES || "ca,de,nz,fi,ie,br,jp,in"}`)
   .split(";").filter(Boolean).map((ph) => { const [type, list] = ph.split(":"); return { type: type.trim(), countries: list.split(",").map((c) => c.trim()).filter(Boolean) }; });
-if (!TOKEN) throw new Error("BROWSERLESS_TOKEN is not set");
+const LOCAL = PROXY_PLAN.some((p) => p.type === "local");
+const LOCAL_HEADLESS = (process.env.LOCAL_HEADLESS || "true") !== "false";
+const CONCURRENCY = Number(arg("--concurrency", LOCAL ? 6 : 2));
+if (!TOKEN && !PROXY_PLAN.every((p) => p.type === "local")) throw new Error("BROWSERLESS_TOKEN is not set");
 
 const OUT = `out/results/shard-${SHARD}.csv`;
 mkdirSync("out/results", { recursive: true });
@@ -29,7 +44,7 @@ mkdirSync("out/text", { recursive: true });
 export const COLUMNS = [
   "id", "source", "casino", "review_url", "start_type", "start_url", "status", "final_url", "final_domain", "redirect_chain",
   "exit_country", "ip", "ip_country", "countries_tried", "scraped_at", "terms_found", "pages", "licence_numbers", "jurisdictions",
-  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried", "mb",
+  "q_licence", "q_owner", "q_withdrawal_limits", "q_withdrawal_time", "q_installments", "q_kyc", "q_restricted", "footer", "error", "terms_tried", "mb", "jev",
 ];
 
 // Casinos already in this shard's CSV, or in a previous run's merged results.csv placed in out/, are not run again.
@@ -40,16 +55,9 @@ else writeFileSync(OUT, stringify([COLUMNS]));
 if (existsSync("out/results.csv")) idsIn("out/results.csv");
 
 const all = JSON.parse(readFileSync("out/jobs.json", "utf8"));
-const jobs = all.filter((j, i) => i % SHARDS === SHARD && !done.has(j.id) && (!IDS || IDS.has(j.id)));
+const jobs = all.filter((j, i) => i % SHARDS === SHARD && (!done.has(j.id) || (FORCE && IDS)) && (!IDS || IDS.has(j.id)));
 console.log(`shard ${SHARD}/${SHARDS}: ${jobs.length} jobs to run (${done.size} already done)`);
 
-const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
-const BLOCK_TEXT = /not (available|accessible) (in|from) your (country|region|location)|access (is )?(denied|restricted)|restricted (country|region|territor)|can(?:'|no)t access from this country|unavailable in your (country|region)|we do not accept players from|your country is (blocked|restricted)|403 forbidden|error 1020|sorry, you have been blocked/i;
-const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required/i;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
-const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
 function wsUrl(country, type = "residential") {
   // A session may need the lobby, up to three terms candidates, a click, a few guessed paths and two more
@@ -62,24 +70,26 @@ function wsUrl(country, type = "residential") {
 }
 
 /**
- * Opens a Browserless session. A 429 means the plan's concurrent-session limit is full (other shards hold the
- * sessions), so wait and try again rather than fail the row.
+ * Opens a browser session: the installed Chrome for the local phase, otherwise Browserless. A 429 from Browserless
+ * means the plan's concurrent-session limit is full (other shards hold the sessions), so wait and try again rather
+ * than fail the row.
  */
 async function connect(country, type) {
-  let delay = 15000;
+  if (type === "local") return chromium.launch({ channel: "chrome", headless: LOCAL_HEADLESS, args: ["--disable-blink-features=AutomationControlled", "--lang=en-US"] });
+  let delay = 4000;
   for (let i = 0; ; i++) {
     try { return await chromium.connectOverCDP(wsUrl(country, type), { timeout: 45000 }); }
     catch (e) {
-      if (!/429|Too Many Requests/.test(e.message) || i >= 5) throw e;
-      await sleep(delay + Math.random() * 5000);
-      delay = Math.min(delay * 2, 120000);
+      if (!/429|Too Many Requests/.test(e.message) || i >= 8) throw e;
+      await sleep(delay + Math.random() * 3000);
+      delay = Math.min(delay * 2, 30000);
     }
   }
 }
 
 /** Follows a tracking link without a proxy and returns the casino URL it lands on, or "" when it stays on the tracker. */
 async function resolveDirect(url) {
-  const browser = await connect("direct");
+  const browser = LOCAL ? await connect("local", "local") : await connect("direct");
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();
@@ -91,21 +101,9 @@ async function resolveDirect(url) {
   } finally { await browser.close().catch(() => {}); }
 }
 
-async function bodyText(page) {
-  return page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-}
-
-async function settle(page) {
-  await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
-  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => {});
-  for (let i = 0; i < 3; i++) {
-    const t = await bodyText(page);
-    if (!CHALLENGE_TEXT.test(t.slice(0, 2000)) && t.length > 200) return t;
-    await sleep(6000);
-  }
-  return bodyText(page);
-}
-
+// The local exit is one machine's VPN: asked once per process and refreshed every ten minutes (exit.mjs). A Browserless
+// session has its own proxy exit, so it is asked per session.
+const localExit = exitLookup();
 async function whereAmI(context) {
   const p = await context.newPage();
   try {
@@ -122,6 +120,7 @@ async function whereAmI(context) {
 const BLOCK_PATTERNS = [
   "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.avif*", "*.svg*", "*.ico*", "*.mp4*", "*.webm*", "*.m3u8*", "*.mp3*", "*.ogg*",
   "*.woff*", "*.ttf*", "*.otf*", "*/images/*", "*/img/*", "*/thumbnails/*", "*/thumbs/*", "*/videos/*",
+  "*.riv*", "*.wasm*", "*.glb*", "*.gltf*", "*.hdr*", "*lottie*", "*progressive-jackpot*", "*/feeds/*", "*jackpot*feed*", "*/sw.js*",
   "*google-analytics*", "*googletagmanager*", "*doubleclick*", "*facebook.net*", "*facebook.com/tr*", "*hotjar*", "*clarity.ms*", "*intercom*",
   "*livechatinc*", "*zendesk*", "*tawk.to*", "*sentry.io*", "*segment.io*", "*segment.com*", "*mixpanel*", "*amplitude*", "*optimizely*",
   "*onesignal*", "*pusher*", "*youtube*", "*vimeo*", "*comm100*", "*cookiebot*", "*posthog*", "*smartlook*", "*fullstory*", "*freshchat*", "*crisp.chat*",
@@ -133,207 +132,56 @@ async function installBlocklist(page) {
     await cdp.send("Network.enable");
     await cdp.send("Network.setBlockedURLs", { urls: BLOCK_PATTERNS });
     cdp.on("Network.loadingFinished", (e) => { meter.bytes += e.encodedDataLength || 0; });
+    // Live-bet and jackpot tickers stream over WebSockets for as long as the session lives; count their frames too.
+    // Lifting the blocklist: a casino app that needs a blocked file to render its terms (see fetchTerms).
+    meter.unblock = async () => { await cdp.send("Network.setBlockedURLs", { urls: [] }); return true; };
+    cdp.on("Network.webSocketFrameReceived", (e) => { meter.bytes += (e.response?.payloadData || "").length; meter.ws = (meter.ws || 0) + (e.response?.payloadData || "").length; });
   } catch { /* an older Browserless build without the domain: run unblocked */ }
   return meter;
 }
 
-// Single-page lobbies render their footer late and load more games as you scroll: scroll to the bottom until a
-// terms link is present or the set of links stops changing, up to ~30 s. Then collect the footer text, every
-// anchor (with whether it sits in the footer) and, for apps that route from plain elements with a click handler
-// instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked.
-const CLICK_TEXT = "terms|conditions|t\\s*&\\s*c|\\btos\\b|user[-\\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\\bagb\\b|r[eè]gles|regulamin";
-async function readLobby(page) {
-  let last = -1, stable = 0;
-  for (let i = 0; i < 10; i++) {
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-    await sleep(3000);
-    const n = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("a[href]")];
-      return { a: links.length, t: links.some((a) => /terms|conditions|t&c/i.test(a.innerText + a.getAttribute("href"))) };
-    }).catch(() => ({ a: 0, t: false }));
-    if (n.t) break;
-    stable = n.a === last && n.a > 10 ? stable + 1 : 0;
-    if (stable >= 2 && i >= 3) break;
-    last = n.a;
-  }
-  // Read with the footer in view: some apps mount footer sections only while they are on screen (Lebull's legal
-  // links vanished from the DOM once the page was scrolled back to the top).
-  const lobby = await page.evaluate((clickRe) => {
-    const re = new RegExp(clickRe, "i");
-    const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer");
-    const f = document.querySelector("footer, [class*=footer i], #footer");
-    const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
-    const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 80), footer: inFooter(a) }));
-    const clickables = [];
-    for (const el of document.querySelectorAll("footer *, [class*=footer i] *, nav *, [class*=menu i] *, li, span, div, p, button")) {
-      const text = (el.innerText || "").trim();
-      if (el.children.length || text.length > 40 || !re.test(text) || /privacy|cookie|bonus|promo|sport|rules/i.test(text) || el.closest("a[href]")) continue;
-      if (clickables.some((c) => c.text === text)) continue;
-      el.setAttribute("data-cts", String(clickables.length));
-      clickables.push({ text, footer: inFooter(el), sel: `[data-cts="${clickables.length}"]` });
-      if (clickables.length >= 6) break;
-    }
-    clickables.sort((a, b) => (b.footer ? 1 : 0) - (a.footer ? 1 : 0));
-    return { url: location.href, footer, links, clickables };
-  }, CLICK_TEXT).catch(() => ({ url: page.url(), footer: "", links: [], clickables: [] }));
-  return lobby;
-}
-
-// A terms page is only read once its text has stopped growing: single-page apps show the shell first
-// ("Loading Terms and Conditions…" on BangaWin) and fill the document in later. A WAF or bot-check page is a
-// failure, not a document.
-const DOC_WALL = /WAF Block|Performing security verification|Just a moment|Attention Required|Access Denied|Checking your browser|verify you are human/i;
-const DOC_LOADING = /\bloading\b/i;
-// A page whose first few hundred words are mostly the same token is a font-measurement or skeleton placeholder
-// ("word word word …" on Winoly), not content.
-const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).size < 40;
-// The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
-const TERMS_WORDS = /\bterms?\b|\bconditions?\b|agreement|termos|condi[cç]|\bagb\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden/gi;
-const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
-// `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
-// with only the navigation is stable long before the document itself arrives (NetBet's help pages).
-async function readDoc(page, budget = 25000, want = (t) => t.length >= 500) {
-  const t0 = Date.now();
-  let lastLen = -1, wallSince = 0;
-  while (Date.now() - t0 < budget) {
-    const t = await bodyText(page);
-    const head = t.slice(0, 1500);
-    // A bot wall that has not cleared in 12 s will not: give up early, the caller moves on.
-    if (DOC_WALL.test(head)) { wallSince ||= Date.now(); if (Date.now() - wallSince > 12000) return { ok: false, text: t, note: "wall" }; } else wallSince = 0;
-    if (t.length >= 500 && !DOC_WALL.test(head) && !DOC_LOADING.test(t.slice(0, 400)) && !placeholder(t) && want(t)) {
-      if (t.length === lastLen) return { ok: true, text: t };
-      lastLen = t.length;
-    }
-    await sleep(1500);
-  }
-  const t = await bodyText(page);
-  const wall = DOC_WALL.test(t.slice(0, 1500));
-  return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
-}
-
-/**
- * Opens the casino's terms, in this order: anchors that score as the general terms (up to three); for apps whose
- * footer routes from plain elements, a click on the element that reads like the terms link; the sitemap and the
- * paths casinos commonly use; and last, anchors that scored as a promotion's terms, which are better than nothing.
- * Returns the page's text and URL, and what was tried.
- */
-const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
-async function fetchTerms(page, lobby) {
-  const tried = [];
-  const cands = termsCandidates(lobby.links, lobby.url);
-  dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
-  const tryLink = async (c, lenient = false) => {
-    try { await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) { tried.push(`${c.href} (${clip(e.message, 60)})`); return null; }
-    const d = await readDoc(page, 35000, lenient ? undefined : readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
-    const good = d.ok && (lenient || readsLikeTerms(d.text));
-    dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return { href: page.url(), text: d.text, via: "link", tried };
-    tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    return null;
-  };
-  // An affiliate landing carries its tracking parameters into every link (go.netbet.co.uk); the page behind the
-  // clean URL is the one a player reads, so it is tried first.
-  const clean = (c) => ({ ...c, href: c.href.replace(/\?.*$/, "") });
-  for (const c of cands.filter((c) => c.score > 0).slice(0, 3)) {
-    for (const v of c.href.includes("?") ? [clean(c), c] : [c]) { const r = await tryLink(v); if (r) return r; }
-    // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
-    if (/\(wall\)$/.test(tried[tried.length - 1] || "")) return { href: "", text: "", via: "", tried, walled: true };
-  }
-  for (const c of lobby.clickables.slice(0, 2)) {
-    try {
-      if (page.url() !== lobby.url) { await page.goto(lobby.url, { waitUntil: "domcontentloaded", timeout: 45000 }); await settle(page); lobby = await readLobby(page); }
-      const target = lobby.clickables.find((x) => x.text === c.text);
-      if (!target) { tried.push(`click "${c.text}" (gone)`); continue; }
-      const before = await bodyText(page);
-      // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
-      await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
-      // Either the app navigates, or it opens the document in place.
-      for (let i = 0; i < 8 && page.url() === lobby.url && (await bodyText(page)).length < before.length + 2000; i++) await sleep(1500);
-      const d = await readDoc(page, 15000, readsLikeTerms);
-      const navigated = page.url() !== lobby.url, grew = d.text.length >= before.length + 2000;
-      dbg("click", c.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
-      if ((navigated ? d.ok : grew) && readsLikeTerms(d.text)) return { href: navigated ? page.url() : `${lobby.url}#"${c.text}"`, text: d.text, via: "click", tried };
-      tried.push(`click "${c.text}" (${navigated ? (d.ok ? "not terms-like" : d.note) : "nothing opened"})`);
-    } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
-  }
-  // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
-  // terms): scan it, read-only, when the lobby gave nothing.
-  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && host(l.href).endsWith(registrable(host(lobby.url))) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
-  if (signup) {
-    try {
-      await page.goto(signup.href, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await settle(page);
-      const sub = await readLobby(page);
-      const subCands = termsCandidates(sub.links, lobby.url).filter((c) => c.score > 0).slice(0, 2);
-      dbg("signup page", signup.href, "candidates:", subCands.map((c) => `${c.score} ${c.href}`).join(" | "));
-      for (const c of subCands) { const r = await tryLink(c); if (r) return { ...r, via: "signup-page" }; }
-      if (!subCands.length) tried.push(`signup page ${signup.href} (no terms link)`);
-    } catch (e) { tried.push(`signup page ${signup.href} (${clip(e.message, 60)})`); }
-  }
-  // Casinos always have terms, so keep looking: the site's sitemap, then the paths casinos commonly use, opened in
-  // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
-  const origin = new URL(lobby.url).origin;
-  const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
-  const guesses = [];
-  try {
-    await page.goto(`${origin}/sitemap.xml`, { waitUntil: "domcontentloaded", timeout: 20000 });
-    const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
-    for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
-      if (/terms|conditions|\btos\b|termos|\bagb\b|regulamin/i.test(m[1]) && !/privacy|cookie|bonus|promo|affiliate|sport|racing|poker|game/i.test(m[1])) guesses.push(m[1]);
-      if (guesses.length >= 3) break;
-    }
-  } catch { /* no sitemap */ }
-  for (const p of ["/terms-and-conditions", "/terms", "/terms-of-service", "/info/terms-and-conditions", "/user-agreement", "/rules"]) {
-    guesses.push(`${origin}${lang}${p}`);
-    if (lang) guesses.push(`${origin}${p}`);
-  }
-  const lobbyText = (await bodyText(page).catch(() => "")) || "";
-  const guessUntil = Date.now() + 120000; // the whole guessing phase gets two minutes
-  for (const href of [...new Set(guesses)].slice(0, 6)) {
-    if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
-    try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
-    const d = await readDoc(page, 8000, readsLikeTerms);
-    if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
-    // Terms, not the lobby or a 404 shell: reads like terms, is much more than the lobby's text and does not start like it.
-    const looksLikeTerms = d.ok && readsLikeTerms(d.text) && d.text.length > lobbyText.length * 0.5 + 1500 && d.text.slice(0, 300) !== lobbyText.slice(0, 300);
-    dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return { href: page.url(), text: d.text, via: "guess", tried };
-  }
-  tried.push(`${guesses.length} sitemap/guessed paths`);
-  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c, true); if (r) return { ...r, via: "promo-terms" }; }
-  if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
-  return { href: "", text: "", via: "", tried };
-}
-
+// Every open session, by job id, so a casino that runs past its budget has its browser closed (budget.mjs).
+const live = sessions();
 async function attempt(job, url, country, type) {
   const browser = await connect(country, type);
+  await live.add(job.id, browser); // a casino already timed out: closed, and this throws
   try {
-    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const context = browser.contexts()[0] ?? (await browser.newContext({ locale: "en-US" }));
     const page = await context.newPage();
     await page.setViewportSize({ width: 1366, height: 900 });
     const meter = await installBlocklist(page);
     const chain = [];
     page.on("framenavigated", (f) => { if (f === page.mainFrame()) chain.push(f.url()); });
-    let status = "ok", httpStatus = 0;
+    let httpStatus = 0;
     try {
       const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
       httpStatus = resp ? resp.status() : 0;
     } catch (e) { return { status: "load_error", error: clip(e.message, 200), chain }; }
-    const text = await settle(page);
+    const text = await settle(page, httpStatus);
     const finalUrl = page.url();
-    const { ip, ip_country } = await whereAmI(context);
-    if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) status = "challenge";
-    else if (BLOCK_TEXT.test(text.slice(0, 5000))) status = "geo_blocked"; // the page says so
-    else if (httpStatus === 403 || httpStatus === 451) status = "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
-    else if (TRACKER_HOSTS.test(host(finalUrl))) status = "stuck_on_tracker";
-    else if (httpStatus >= 400 || text.length < 200) status = "dead_or_empty";
+    const anchors = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80), footer: !!a.closest("footer, [class*=footer i], #footer") }))).catch(() => []);
+    const status = lobbyStatus({ text, httpStatus, finalUrl, links: anchors });
+    // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
+    if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
+    const { ip, ip_country } = status !== "ok" ? { ip: "", ip_country: "" } : type === "local" ? await localExit() : await whereAmI(context);
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
 
     // The lobby and its footer; a page that only asks for a country (unibet.com) is followed to the regional site.
     let lobby = await readLobby(page);
+    // A lobby read before its footer rendered (jasino.com: 78 links and no legal footer once, 124 with it the next time)
+    // is read once more after a reload when it gave no terms link and no clickable; the fuller read stands.
+    if (!termsCandidates(lobby.links, lobby.url).length && !lobby.clickables.length) {
+      try {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
+        await settle(page);
+        const again = await readLobby(page);
+        if (termsCandidates(again.links, again.url).length || again.clickables.length || again.links.length > lobby.links.length) lobby = again;
+      } catch { /* the first read stands */ }
+    }
     // A lobby with almost no links did not render (Rokubet via some exits stays a blank shell): let the next country try.
     if (lobby.links.length < 5 && lobby.footer.length < 1500) return { ...base, status: "dead_or_empty", error: "lobby did not render" };
+    let lobbyBody = text; // the text of the lobby the terms search will start from
     const regional = regionalSites(lobby.links, lobby.url, country);
     if (!termsCandidates(lobby.links, lobby.url).length && !lobby.clickables.length && regional.length) {
       try {
@@ -341,11 +189,19 @@ async function attempt(job, url, country, type) {
         await settle(page);
         lobby = await readLobby(page);
         base.finalUrl = lobby.url;
+        lobbyBody = await bodyText(page);
       } catch { /* the first lobby stands */ }
     }
+    // A for-sale listing on the casino's own domain links the marketplace's legal pages (betfunk.com: Dan.com).
+    const market = marketplaceLobby(lobby.links, lobby.url);
+    if (market) return { ...base, status: "parked", error: `domain listing: ${market}` };
+    // A review or affiliate site is not a casino: it gets the parked status, with the reason.
+    const nc = notCasino(`${lobbyBody}\n${lobby.footer}`, termsCandidates(lobby.links, lobby.url), lobby.url);
+    if (nc) return { ...base, status: "parked", error: `not casino: ${nc}` };
     const docs = [{ label: "footer", text: lobby.footer }];
-    const terms = await fetchTerms(page, lobby);
-    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}`, text: terms.text.slice(0, 250000) });
+    const jev = { notes: [] };
+    const terms = await fetchTerms(page, lobby, jev, { unblock: meter.unblock });
+    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.pdf ? " (pdf)" : ""}`, text: terms.text.slice(0, 250000) });
     for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
       try {
         await page.goto(p.href, { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -353,15 +209,15 @@ async function attempt(job, url, country, type) {
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576 };
-  } finally { await browser.close().catch(() => {}); }
+    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
+  } finally { live.remove(job.id, browser); await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
 async function run(job) {
   const row = { id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, start_type: job.start_type, start_url: job.start_url, scraped_at: new Date().toISOString() };
   if (!job.start_url) return { ...row, status: "no_url" };
   const urls = [job.start_url];
-  if (job.start_type === "tracking" && job.domain) urls.push(job.domain);
+  if ((job.start_type === "tracking" || job.start_type === "resolved") && job.domain && !job.start_url.includes(host(job.domain))) urls.push(job.domain);
   const tried = [];
   let r = { status: "not_run" };
   let resolved = "";
@@ -374,11 +230,13 @@ async function run(job) {
     // The datacenter phase is a cheap first try: a casino that blocked it through the resolved link gets the bare
     // domain only in the residential phase.
     if (phase.type === "datacenter" && u > 0 && url !== resolved) continue;
-    const tag = (c) => `${phase.type === "datacenter" ? "dc-" : ""}${c}`;
+    const tag = (c) => `${phase.type === "datacenter" ? "dc-" : phase.type === "local" ? "local-" : ""}${c}`;
     let walls = 0;
     for (const c of phase.countries) {
+      if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
+      if (live.ended(job.id)) break outer; // timed out: its row is written, no more sessions
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
-      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
       mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
@@ -388,6 +246,7 @@ async function run(job) {
       }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
+      if (r.status === "parked") break outer; // a for-sale page is the same from every exit; an exit that reached the casino earlier still stands as the fallback
       if (r.status === "challenge" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {
@@ -396,11 +255,12 @@ async function run(job) {
         if (u === 0 && job.start_type === "tracking" && !resolved) {
           resolved = await resolveDirect(url).catch(() => "");
           if (resolved) { urls.splice(1, 0, resolved); tried.push("direct(resolve)"); }
-        } else if (tunnel && !TRACKER_HOSTS.test(host(url))) {
+        } else if (tunnel && phase.type !== "local" && !TRACKER_HOSTS.test(host(url))) {
+          // (Locally there is no proxy to go around: a DNS failure is the casino's, and "direct" would be the same Chrome.)
           // The proxy refuses the casino's own domain (it does for some gambling sites). Last resort: no proxy, from
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
-          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(e.message.replace(TOKEN, "***"), 200) }; }
+          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
           mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
@@ -414,6 +274,7 @@ async function run(job) {
     status: r.status, final_url: r.finalUrl || "", final_domain: host(r.finalUrl || ""), redirect_chain: (r.chain || []).filter((u) => u !== "about:blank").join(" > ").slice(0, 2000),
     exit_country: r.status === "ok" ? exit.replace("(domain)", "") : "", ip: r.ip || "", ip_country: r.ip_country || "", countries_tried: tried.join(" "),
     error: r.error || (r.httpStatus ? `http ${r.httpStatus}` : ""), mb: mbTotal.toFixed(1),
+    jev: r.jev || "",
   });
   if (r.status === "ok") {
     const q = extract(r.docs);
@@ -433,15 +294,31 @@ async function run(job) {
   return row;
 }
 
+// Where a local run leaves from, for the log: the VPN should be on, but the run goes on either way.
+if (LOCAL && jobs.length) {
+  const { ip, ip_country } = await localExit();
+  console.log(`local Chrome leaves from ${ip || "?"} (${ip_country || "unknown"}); the plan says ${PROXY_PLAN.find((p) => p.type === "local").countries.join("/")}`);
+}
+
 let next = 0, n = 0;
+// A CDP call on a session Browserless has killed (ten-minute cap) can hang forever; with every worker stuck that way
+// Node finds nothing left to run and exits with code 13 (shard 1 of the first full run). The keepalive timer holds
+// the process, and a casino that exceeds its budget is written as "timeout" while its worker moves on.
+const CASINO_BUDGET = 20 * 60000;
+const keepalive = setInterval(() => {}, 60000);
 async function worker() {
   while (next < jobs.length && Date.now() < DEADLINE) {
     const job = jobs[next++];
     const t0 = Date.now();
-    const row = await run(job).catch((e) => ({ id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, status: "crash", error: clip(e.message, 200), scraped_at: new Date().toISOString() }));
+    const base = { id: job.id, source: job.source, casino: job.casino, review_url: job.review_url, scraped_at: new Date().toISOString() };
+    // Past the budget the casino's open browser is closed (budget.mjs) and its row is a timeout.
+    const row = await withBudget(job.id, run(job).catch((e) => ({ ...base, status: "crash", error: clip(e.message, 200) })), CASINO_BUDGET,
+      live, () => ({ ...base, status: "timeout", error: `no result within ${CASINO_BUDGET / 60000} min` }));
     appendFileSync(OUT, stringify([COLUMNS.map((c) => row[c] ?? "")]));
     console.log(`[${++n}/${jobs.length}] ${job.id} ${job.casino} -> ${row.status} ${row.final_domain || ""} ${row.exit_country || ""} ${Math.round((Date.now() - t0) / 1000)}s ${row.mb || 0}MB`);
   }
 }
 await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+clearInterval(keepalive);
 if (next < jobs.length) console.log(`deadline reached: ${jobs.length - next} casinos of this shard not started; run again with previous_run_id to continue`);
+process.exit(0); // hung sessions from timed-out casinos must not keep the shard alive
