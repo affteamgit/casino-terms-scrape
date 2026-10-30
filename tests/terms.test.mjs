@@ -621,6 +621,16 @@ test("isShellOf: the lobby's own text, or its opening with no more terms words t
   assert.ok(Math.abs(near.length - lobby.length * 1.05) < terms.length);
   assert.equal(isShellOf(near, ref, lobby), false, "a terms page under the lobby's header at 1.05 times its length");
   assert.equal(isShellOf((header + grid.slice(0, grid.length / 2) + "Page not found." + footer).trim(), ref, lobby), true, "a 404 shell: the header, half the grid and the footer");
+  // elarabet.com: the lobby's menu runs past 2,000 characters, so a terms page under it has the lobby's fingerprint.
+  const menu = "Wheel of Fortune Daily Mystery Bonuses Casino Sport Promotions All Promotions Slots New Popular ".repeat(27);
+  const big = (menu + grid + footer).trim(), bigRef = { len: big.length, fp: fingerprint(big) };
+  const page16k = (menu + terms.repeat(Math.ceil((16000 - menu.length) / terms.length))).trim();
+  assert.ok(menu.length >= 2500 && page16k.length >= 16000 && fingerprint(page16k) === bigRef.fp);
+  assert.equal(isShellOf(page16k, bigRef, big), false, "a 16k terms page under a 2,500-character menu");
+  assert.equal(isShellOf(big, bigRef, big), true, "the lobby itself");
+  assert.equal(isShellOf((menu + grid.slice(0, grid.length / 2) + "Page not found." + footer).trim(), bigRef, big), true, "a 404 shell under the long menu");
+  // the SHELL fixture: the same page on every path is the shell, by its visible and by its hidden text
+  assert.equal(isShellOf(SHELL, { len: SHELL.length, fp: fingerprint(SHELL) }, SHELL), true);
 });
 
 // A lobby whose header holds more than 300 characters of navigation, and a terms page under the same header.
@@ -653,6 +663,33 @@ test("a Jev pick that is also a heuristic candidate keeps that candidate's score
       await page.goto("https://casino.test/");
       const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "/bonus-terms", accept: () => false }) });
       assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+    } finally { await browser.close(); }
+  });
+});
+
+// elarabet.com: a menu of more than 2,500 characters opens the lobby and every page under it; Jev picks the general
+// terms, and the footer also links a sportsbook's terms (its path misspelled, so the path does not name the product).
+const MENU = `<header><nav>${Array.from({ length: 200 }, (_, i) => `<a href="/c/${i}">${["Wheel of Fortune", "Daily Mystery", "Bonuses", "Casino", "Sport", "Promotions", "Slots", "New", "Popular"][i % 9]} ${i}</a>`).join(" ")}</nav></header>`;
+const ELARA_FOOTER = `<a href="/terms-and-conditions">Terms and Conditions</a><a href="/spotsbook-terms-and-conditions">Sportsbook Terms &amp; Conditions</a>`;
+
+test("a terms page under the lobby's long menu (the same first 2,000 characters) is the terms, not the lobby shell (elarabet)", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      await site(page, {
+        "/": LOBBY(ELARA_FOOTER).replace("<body>", `<body>${MENU}`),
+        "/terms-and-conditions": TERMS_PAGE().replace("<body>", `<body>${MENU}`),
+        "/spotsbook-terms-and-conditions": TERMS_PAGE("Sportsbook Terms and Conditions").replace("<body>", `<body>${MENU}`),
+      });
+      await page.goto("https://casino.test/");
+      const lobbyText = await page.evaluate(() => document.body.innerText);
+      assert.ok(lobbyText.indexOf("Play slots") >= 2500, "the menu runs past 2,500 characters");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "/terms-and-conditions", accept: () => true }) });
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.ok(!read.includes("/spotsbook-terms-and-conditions"), "the sportsbook's terms were never read");
     } finally { await browser.close(); }
   });
 });

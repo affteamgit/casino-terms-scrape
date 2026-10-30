@@ -154,13 +154,15 @@ export function addedText(after, before) {
 export const fingerprint = (t) => t.replace(/\s+/g, " ").trim().slice(0, 2000);
 /**
  * Is a candidate page's text the lobby shell (`ref` and `refText`: the lobby's visible or hidden text, measured)? Stricter
- * than sameAsLobby, since a real terms page often opens with the lobby's header: the same first 2,000 characters, or
- * the same first 300 with no more than five terms words (TERMS_WORDS, as readsLikeTerms counts them) beyond the
- * lobby's own. A shorter 404 shell (the header, part of the grid, the footer) is one; a terms page under the header is not.
+ * than sameAsLobby, since a real terms page often opens with the lobby's header, and the header can run past 2,000
+ * characters (elarabet's menu): the same first 2,000 characters or the same first 300, and in either case no more than
+ * five terms words (TERMS_WORDS, as readsLikeTerms counts them) beyond the lobby's own. A shell never holds more terms
+ * than the lobby: a shorter 404 shell (the header, part of the grid, the footer) is one; a terms page under the header is not.
  */
 const termsWords = (t) => (t.match(TERMS_WORDS) || []).length;
-export const isShellOf = (text, ref, refText) => !!ref.len && (fingerprint(text) === ref.fp
-  || (text.slice(0, 300) === refText.slice(0, 300) && termsWords(text) <= termsWords(refText) + 5));
+export const isShellOf = (text, ref, refText) => !!ref.len
+  && (fingerprint(text) === ref.fp || text.slice(0, 300) === refText.slice(0, 300))
+  && termsWords(text) <= termsWords(refText) + 5;
 /**
  * Is a text the lobby's own? An in-place click that opens nothing leaves the lobby's hidden text, which reads like
  * anything the lobby says about terms; a guessed path that an app routes to the lobby shows the lobby again. Three rules:
