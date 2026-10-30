@@ -73,7 +73,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 |---|---|
 | `id`, `source`, `casino`, `review_url` | the casino (id = the input row its job started from; `source` lists every site it appears on, e.g. `casinoguru+lcb`) |
 | `start_type`, `start_url` | `tracking` link, or the casino `domain` when the link was N/A |
-| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `load_error`, `connect_error`, `no_url` |
+| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `maintenance` (a bare page that says the site is down for maintenance), `load_error`, `connect_error`, `timeout` (no result within the 20-minute casino budget; its browser is closed), `crash` (the run threw; `error` says why), `no_url` |
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
 | `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`dc-` prefix = datacenter proxy, `direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |
@@ -89,11 +89,13 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 
 ## How it reads a casino
 
-1. Open the tracking link through the datacenter proxy, Canada then Germany, and if the casino blocks hosting IPs
-   through the residential proxy, Canada first, then the other `EXIT_COUNTRIES`. The proxies refuse the tracker
+1. Open the tracking link through the local Chrome first (the local pass, `PROXY_PLAN=local:no`: the VPN decides
+   the exit; see "Locally" below). On a Browserless plan: through the datacenter proxy, Canada then Germany, and if
+   the casino blocks hosting IPs through the residential proxy, Canada first, then the other `EXIT_COUNTRIES`. The proxies refuse the tracker
    domains, so the redirect is resolved without a proxy first and the destination is then opened through the proxy.
    Casinos the proxy also refuses get one direct attempt. `exit_country` carries a `dc-` prefix for a datacenter exit.
-2. Record the final URL, the redirect chain, and the IP and country reported by ipinfo.io for that session.
+2. Record the final URL, the redirect chain, and the IP and country reported by ipinfo.io: for a Browserless
+   session, asked per session; for the local Chrome, asked once per run and again every ten minutes.
 3. Wait for the lobby to finish rendering (single-page apps draw the footer late), then read the footer.
 4. Open the terms. Casinos always have them, so the search escalates until something is found: every anchor is
    scored (`src/links.mjs`) and up to three general-terms candidates are tried; where the footer routes from plain

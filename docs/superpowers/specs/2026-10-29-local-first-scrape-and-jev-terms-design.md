@@ -63,13 +63,16 @@ and the VPN guard, not a proxy setting.
   connect, `attempt()` included, is unchanged: the CDP blocklist and byte meter work on a local Chromium too.
   `LOCAL_HEADLESS` defaults to `true`; the pilot decides whether headed Chrome draws fewer challenge pages.
 - `resolveDirect()` (tracker redirects) runs through the same local browser when the plan has a local phase.
-- **Exit check, for information only.** Before the first casino, the shard opens ipinfo.io through the local
-  browser and prints the IP and country it is leaving from. Every reached casino records `ip_country` as today, so
-  a VPN drop shows in the results; the run does not stop for it (the user is fine with the home IP being used).
+- **Exit check, for information only.** Before the first casino, the shard asks ipinfo.io where this machine
+  leaves from (Node's fetch, through the same VPN as the local Chrome) and prints the IP and country. Every reached
+  casino records `ip` and `ip_country` from that answer, asked again once ten minutes have passed (one request in
+  flight at a time; a failed lookup keeps the last good answer), so a VPN drop shows in the results within ten
+  minutes without spending ipinfo.io's ~1,000-a-day free quota on a call per casino; Browserless sessions are still
+  asked per session. The run does not stop for it (the user is fine with the home IP being used).
 - Concurrency defaults to 6 for a local run (`--concurrency`). `CASINO_BUDGET` (20 min) and the per-session
   timeouts stay. `exit_country` records `local-no` style tags so local and Browserless rows are distinguishable.
 - Keys live in `.env` (gitignored): `BROWSERLESS_TOKEN`, `TYPESAFE_API_KEY`, `PROXY_PLAN=local:no`. Scripts are run
-  with `node --env-file=.env …` (Node 20+; the Mac has Node 26). `BROWSERLESS_TOKEN` is not required for a local-only
+  with `node --env-file=.env …` (Node 22.13+, `engines` in package.json; the Mac has Node 26). `BROWSERLESS_TOKEN` is not required for a local-only
   plan.
 
 Running the whole set locally:
@@ -107,8 +110,8 @@ node src/merge.mjs
   recorded in `terms_tried` as `(pdf unreadable)`.
 - **Off-domain terms links.** `termsScore` keeps rejecting other hosts in general (a regulator's `/terms` must not
   win), but allows a footer link whose text matches `TERMS_TEXT` when the href is a PDF or on a known file host
-  (`cloudfront.net`, `amazonaws.com`, `storage.googleapis.com`, `blob.core.windows.net`, a `cdn.` or `static.`
-  subdomain), at a 3-point penalty. Jev's choice (below) sees every footer link regardless, so other off-domain
+  (`cloudfront.net`, `amazonaws.com`, `storage.googleapis.com`, `blob.core.windows.net`, a `cdn.`, `static.`,
+  `files.`, `assets.` or `docs.` subdomain), at a 3-point penalty. Jev's choice (below) sees every footer link regardless, so other off-domain
   cases are covered there.
 
 ## 3. Jev
@@ -145,7 +148,7 @@ knows the API.
     is not a bot wall, Jev is asked a Noul "Is `page` the general terms and conditions of an online casino or
     sportsbook?" with `false`: "a promotion's or bonus terms, a privacy or cookie policy, game or sports-betting
     rules, a help centre, a lobby, or an error page". State: `{ page: { title, headings (≤ 30), text (first 6,000
-    chars) } }`. Accept at ≥ 0.7. One call per distinct URL per casino.
+    chars) } }`. Accept at ≥ 0.7. One call per distinct URL and text length per casino.
 
 - **Result columns.** A new `jev` column: `link:<noul>/<p of pick>` and `page:<noul>` when consulted, `off` when
   no key, `error:<message>` on failure. Everything else stays as it is.
