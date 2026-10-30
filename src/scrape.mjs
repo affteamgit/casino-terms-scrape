@@ -5,10 +5,10 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
-import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { host, termsCandidates, otherDocs, regionalSites } from "./links.mjs";
 import { exitLookup } from "./exit.mjs";
 import { sessions, withBudget } from "./budget.mjs";
-import { sleep, host, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
+import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));

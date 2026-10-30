@@ -17,7 +17,8 @@ const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;
 export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net)$|^(cdn|static|files|assets|docs)\./i;
 export const isPdf = (u) => /\.pdf(\?|#|$)/i.test(u);
 
-export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; } };
+/** A web address's host, without www and lowercased; "" for another scheme (javascript:, chrome-error:) or no URL. */
+export const host = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.replace(/^www\./, "").toLowerCase() : ""; } catch { return ""; } };
 /** Is host `h` the domain `own` or a subdomain of it? (evilclubscasino.com is not clubscasino.com.) */
 export const withinDomain = (h, own) => !!own && (h === own || h.endsWith("." + own));
 export const registrable = (h) => { const l = h.split("."); return l.slice(l.length > 2 && /^(co|com|net|org|ac|gov|edu)$/.test(l[l.length - 2]) ? -3 : -2).join("."); };

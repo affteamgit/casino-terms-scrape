@@ -1,7 +1,7 @@
 // Everything the scraper asks Jev (TypeSafe AI): the two judgments, their wording, how the answers are read, and
 // the HTTP call. Jev supplies judgments; the code in terms.mjs decides what to do with them, and runs unchanged
 // when there is no key or the call fails.
-import { registrable, withinDomain, FILE_HOST } from "./links.mjs";
+import { host, registrable, withinDomain, FILE_HOST } from "./links.mjs";
 
 const API = "https://api.typesafe.ai/v1/systemone";
 export const MODEL = "jev-1.14.0"; // pinned: aliases move when a new release ships
@@ -21,7 +21,6 @@ const key = () => process.env.TYPESAFE_API_KEY || "";
 export const jevEnabled = () => !!key();
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 const path = (u) => { try { const x = new URL(u); return x.pathname + x.search; } catch { return u; } };
-const host = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.replace(/^www\./, "").toLowerCase() : ""; } catch { return ""; } };
 const slug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
 const LEGAL = /terms|conditions|\btos\b|legal|agreement|rules|policy|privacy|regulamin|\bagb\b|bedingungen|condi|termos/i;
 

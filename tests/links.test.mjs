@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
+import { host, termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -192,4 +192,12 @@ test("a lookalike domain is not the casino's own; a true subdomain is", () => {
   const links = [L("Payments", "https://evilx.com/payments"), L("KYC", "https://evilx.com/kyc")];
   assert.deepEqual(otherDocs(links, "https://x.com/"), []);
   assert.deepEqual(otherDocs([...links, L("Payments", "https://cdn.x.com/payments")], "https://x.com/"), [{ kind: "payments", href: "https://cdn.x.com/payments" }]);
+});
+
+test("host: the web address's host without www, lowercased; nothing for another scheme or no URL", () => {
+  assert.equal(host("https://WWW.Example.com/terms"), "example.com");
+  assert.equal(host("http://cdn.example.com"), "cdn.example.com");
+  assert.equal(host("ftp://example.com/terms.pdf"), "");
+  assert.equal(host("chrome-error://chromewebdata/"), "");
+  assert.equal(host("not a url"), "");
 });

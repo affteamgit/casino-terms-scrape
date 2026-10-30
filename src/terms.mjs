@@ -1,12 +1,11 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
+import { host, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-export const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 export const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
 export const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required|human verification|performing security verification/i;
