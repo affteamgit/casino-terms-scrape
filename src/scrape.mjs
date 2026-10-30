@@ -6,6 +6,7 @@ import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
 import { termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { exitLookup } from "./exit.mjs";
 import { sleep, host, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
@@ -91,6 +92,9 @@ async function resolveDirect(url) {
   } finally { await browser.close().catch(() => {}); }
 }
 
+// The local exit is one machine's VPN: asked once per process and refreshed every ten minutes (exit.mjs). A Browserless
+// session has its own proxy exit, so it is asked per session.
+const localExit = exitLookup();
 async function whereAmI(context) {
   const p = await context.newPage();
   try {
@@ -147,7 +151,7 @@ async function attempt(job, url, country, type) {
     const status = lobbyStatus({ text, httpStatus, finalUrl, links: anchors });
     // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
     if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
-    const { ip, ip_country } = status === "ok" ? await whereAmI(context) : { ip: "", ip_country: "" };
+    const { ip, ip_country } = status !== "ok" ? { ip: "", ip_country: "" } : type === "local" ? await localExit() : await whereAmI(context);
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
 
@@ -278,9 +282,8 @@ async function run(job) {
 
 // Where a local run leaves from, for the log: the VPN should be on, but the run goes on either way.
 if (LOCAL && jobs.length) {
-  const b = await connect("local", "local");
-  try { const { ip, ip_country } = await whereAmI(await b.newContext()); console.log(`local Chrome leaves from ${ip || "?"} (${ip_country || "unknown"}); the plan says ${PROXY_PLAN.find((p) => p.type === "local").countries.join("/")}`); }
-  finally { await b.close().catch(() => {}); }
+  const { ip, ip_country } = await localExit();
+  console.log(`local Chrome leaves from ${ip || "?"} (${ip_country || "unknown"}); the plan says ${PROXY_PLAN.find((p) => p.type === "local").countries.join("/")}`);
 }
 
 let next = 0, n = 0;
