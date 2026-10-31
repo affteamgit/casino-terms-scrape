@@ -424,40 +424,51 @@ export function namesProduct(l) {
 }
 
 // A page the legal pages may hang from when the lobby links none (goluckycasino.com's /support), named by its caption
-// or its last path segment; not a login, affiliate, blog or promotion page.
-const HELP_LINK = /\b(help|support|faq|customer[- ](service|support|care)|legal|about|info(rmation)?|contact)/i, HELP_SKIP = /login|affiliate|blog|promo/i;
+// or its last path segment, by kind: a legal page, then a support or help page, then an FAQ, then an about, info or
+// contact page. Never a login, affiliate, blog or promotion page, nor a game's, a bonus's or a security page
+// ("/game-info/starburst", "/bonus-info", "/about-bonuses", "/information-security").
+const HELP_KINDS = [/\blegal/i, /\b(support|help|customer[- ](service|support|care))/i, /\bfaqs?\b/i, /\b(about|info(rmation)?|contact)/i];
+const HELP_SKIP = /login|affiliate|blog|promo|bonus|game|slot|casino-games|security/i;
 /**
- * The lobby's links to its own help, support, FAQ, legal, about, info or contact pages, footer first, then in page
- * order; one per page (the hash and a trailing slash ignored), never the lobby itself or a document.
+ * The lobby's links to its own help pages (HELP_KINDS), best kind first, then the footer's, then in page order; one
+ * per page (the hash and a trailing slash ignored), never a document or the lobby itself (also with only a query or a
+ * hash of its own: "/?page=about").
  */
 export function helpLinks(links, pageUrl) {
-  const own = registrable(host(pageUrl)), bare = (u) => u.replace(/#.*$/, "").replace(/\/$/, ""), seen = new Set([bare(pageUrl)]), out = [];
-  for (const l of [...links.filter((x) => x.footer), ...links.filter((x) => !x.footer)]) {
-    if (!/^https?:/i.test(l.href) || !withinDomain(host(l.href), own) || isDoc(l.href) || seen.has(bare(l.href))) continue;
+  const own = registrable(host(pageUrl)), bare = (u) => u.replace(/#.*$/, "").replace(/\/$/, "");
+  const page = (u) => { try { const x = new URL(u); return x.origin + x.pathname.replace(/\/$/, ""); } catch { return u; } };
+  const seen = new Set(), out = [];
+  links.forEach((l, i) => {
+    if (!/^https?:/i.test(l.href) || !withinDomain(host(l.href), own) || isDoc(l.href) || page(l.href) === page(pageUrl) || seen.has(bare(l.href))) return;
     const p = urlPath(l.href), seg = p.split("/").filter(Boolean).pop() || "", text = l.text || "";
-    if (!(HELP_LINK.test(text) || HELP_LINK.test(seg)) || HELP_SKIP.test(`${text} ${p}`)) continue;
+    const kind = HELP_KINDS.findIndex((re) => re.test(text) || re.test(seg));
+    if (kind < 0 || HELP_SKIP.test(`${text} ${p}`)) return;
     seen.add(bare(l.href));
-    out.push(l);
-  }
-  return out;
+    out.push({ l, kind, foot: l.footer ? 0 : 1, i });
+  });
+  return out.sort((x, y) => x.kind - y.kind || x.foot - y.foot || x.i - y.i).map((x) => x.l);
 }
 
-// A sign-up control's caption, at most 40 characters: not a login, an affiliate programme or a terms caption
-// ("Registration terms").
-const SIGNUP_CONTROL = String.raw`\b(sign[\s-]?up|register|join( now)?|create (an )?account|registration)\b`, SIGNUP_SKIP = String.raw`log\s?in|sign\s?in|affiliate|terms|conditions`;
+// A sign-up control's caption, at most 40 characters: not a login, an affiliate programme, a terms caption
+// ("Registration terms"), a sign-up through another service (Google, Telegram, a wallet) or a game's or a table's "Join".
+const SIGNUP_CONTROL = String.raw`\b(sign[\s-]?up|register|join( now)?|create (an )?account|registration)\b`, SIGNUP_SKIP = String.raw`log\s?in|sign\s?in|affiliate|terms|conditions|google|facebook|apple|telegram|steam|wallet|metamask|table|game`;
 /**
  * Runs inside the page: marks the sign-up control that opens something on the page itself (a modal) with data-csu and
- * returns its caption, or "". A button, a role=button, an element with an onclick or a button-like class, or a link
- * that goes nowhere by itself (no href, "", "#...", javascript:, or this page again: a hash route or a query); a link to
- * another page is the signup-page step's. A visible one first.
+ * returns its caption, or "". A button (not a form's submit button), a role=button, an element with an onclick or a
+ * button-like class, or a link that goes nowhere by itself (no href, "", "#...", javascript:, or this page again: a hash
+ * route or a query); a link to another page is the signup-page step's. A visible one first.
  */
 export function findSignupInPage(re, skip) {
   const r = new RegExp(re, "i"), s = new RegExp(skip, "i"), here = (u) => u.origin + u.pathname.replace(/\/$/, "");
   for (const el of document.querySelectorAll("[data-csu]")) el.removeAttribute("data-csu");
   const caption = (el) => (el.innerText || el.value || "").trim().replace(/\s+/g, " ");
   const router = (a) => { const h = (a.getAttribute("href") || "").trim(); if (h === "" || h.startsWith("#") || /^javascript:/i.test(h)) return true; try { return here(new URL(a.href)) === here(location); } catch { return false; } };
-  const els = [...document.querySelectorAll("a, button, [role=button], [onclick], input[type=button], input[type=submit], [class*=btn i], [class*=button i]")].filter((el) => {
+  // A form's own submit button (an <input type=submit>, a <button> without a type inside a form) submits a form already
+  // open on the page: it opens nothing.
+  const submits = (el) => (el.matches("input[type=submit]") || (el.matches("button") && !!el.closest("form") && (el.getAttribute("type") || "submit").toLowerCase() === "submit"));
+  const els = [...document.querySelectorAll("a, button, [role=button], [onclick], input[type=button], [class*=btn i], [class*=button i]")].filter((el) => {
     const t = caption(el), a = el.closest("a[href]");
+    if (submits(el)) return false;
     return t && t.length <= 40 && r.test(t) && !s.test(t) && (!a || router(a));
   });
   const el = els.find((x) => x.getClientRects().length) || els[0];
@@ -467,7 +478,7 @@ export function findSignupInPage(re, skip) {
 }
 /** Runs inside the page: the links and the marked clickables (readLobby's data-cts) inside a dialog, a modal or a popup. */
 export function modalPartsInPage() {
-  const SEL = "[role=dialog], .modal, [class*=modal i], [class*=popup i], [class*=register i], [class*=signup i]";
+  const SEL = "[role=dialog], .modal, [class*=modal i], [class*=popup i], [class*=register i], [class*=signup i], [id*=popup i], [id*=register i], [id*=signup i]";
   // <body class="modal-open"> is not a modal.
   const inside = (el) => { for (let c = el.closest(SEL); c; c = c.parentElement && c.parentElement.closest(SEL)) if (c !== document.body && c !== document.documentElement) return true; return false; };
   return { hrefs: [...document.querySelectorAll("a[href]")].filter(inside).map((a) => a.href), sels: [...document.querySelectorAll("[data-cts]")].filter(inside).map((el) => `[data-cts="${el.getAttribute("data-cts")}"]`) };
@@ -499,8 +510,11 @@ export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", .
  * (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
  * said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
  */
-export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } = {}) {
+export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock, deadline = Infinity, firstExit = true } = {}) {
   const tried = [];
+  // The casino's own budget (scrape.mjs): past `deadline` the help and modal steps, the guesses and the low-score pass
+  // open nothing more, so the row is written as reached rather than as a timeout.
+  const pastDeadline = () => Date.now() >= deadline;
   const ask = jev.ask || askJev;
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
@@ -897,7 +911,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // general terms (up to two) may be accepted on the pattern; Jev's picks, asked while Jev is up, go first, and one the
   // heuristic scores 0 or less is Jev's alone (jevOnly). A document the page links (docLinks; `from`: the page) is scored
   // on its own caption and name whatever host serves it, since the page vouches for it; scored 0 or less it is Jev's
-  // alone (`lowScore`). URLs already opened are left out. `texts`: the clickables Jev picked, to click first.
+  // alone (`lowScore`). URLs already opened and the page itself are left out. `texts`: the clickables Jev picked, to click first.
   const ownPageCands = async (sub, links, from = "") => {
     const scored = termsCandidates(links, lobby.url).filter((c) => c.score > 0 && !visited.has(c.href));
     let jl = [], texts = [];
@@ -913,9 +927,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       } catch (e) { failed(e); }
     }
     const docs = from ? docLinks(links, from, ownDomain).map((l) => ({ ...l, from, score: termsScore(l, l.href) ?? 0 })) : [];
-    const out = [];
+    const out = [], noHash = (u) => u.replace(/#.*$/, "");
     for (const c of [...jl, ...scored.slice(0, 2), ...docs]) {
-      if (!visited.has(c.href) && !out.some((o) => o.href === c.href)) out.push(c.score > 0 ? c : { ...c, lowScore: true });
+      // The page itself again (a tab or anchor of its own) is not a candidate, as on a hub.
+      if (!visited.has(c.href) && !(from && noHash(c.href) === noHash(from)) && !out.some((o) => o.href === c.href)) out.push(c.score > 0 ? c : { ...c, lowScore: true });
     }
     return { cands: out, texts };
   };
@@ -924,6 +939,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const tryOwnPage = async (list, via, until) => {
     for (const c of list) {
       if (Date.now() > until) { tried.push(`${via} stopped at the time budget`); return null; }
+      if (pastDeadline()) { tried.push(`${via} stopped (casino deadline)`); return null; }
       if (c.lowScore ? !jevEnabled() || jevDown : jevOnly(c) && jevEnabled() && jevDown) { tried.push(`${c.href} (${via}: skipped, Jev ${jevEnabled() ? "down" : "off"})`); continue; }
       const r = await tryLink(c);
       if (r) return { ...r, via };
@@ -984,6 +1000,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (r) return r;
       let click = clicks[0];
       if (!click || Date.now() > until) return null;
+      if (pastDeadline()) { tried.push(`signup modal "${o.text}" clickable skipped (casino deadline)`); return null; }
       if (page.url() !== o.at) {
         const again = await open();
         click = again.grew ? again.clicks.find((x) => x.text === click.text) : null;
@@ -998,19 +1015,27 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const bareUrl = (u) => u.replace(/#.*$/, "").replace(/\/$/, "");
   const signup = lobby.links.find((l) => /^https?:/.test(l.href) && withinDomain(host(l.href), registrable(host(lobby.url))) && bareUrl(l.href) !== bareUrl(lobby.url) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
   if (signup) { const r = await signupPage(signup.href); if (r) return r; }
-  else if (signupControl) { const r = await signupModal(); if (r) return r; }
+  // The modal and help steps run on the first exit that reached the lobby only: another exit sees the same pages.
+  else if (signupControl && firstExit) {
+    if (pastDeadline()) tried.push(`signup modal "${signupControl}" skipped (casino deadline)`);
+    else { const r = await signupModal(); if (r) return r; }
+  }
   // A lobby with no terms link may hang its legal pages off its help, support or FAQ page (goluckycasino.com's /support):
   // up to two of its own such pages (helpLinks), not opened yet, are read like the lobby with the short read (readLobby
-  // dismisses a cookie banner first). Their candidates are opened (ownPageCands), else their first terms clickable is
-  // clicked (Jev's pick first). Two minutes at most for the step.
+  // dismisses a cookie banner first); one that shows the lobby again is left. Their candidates are opened
+  // (ownPageCands), else their first terms clickable is clicked (Jev's pick first). Two minutes at most for the step,
+  // and only on the first exit that reached the lobby.
   const helpUntil = Date.now() + 120000;
-  for (const h of helpLinks(lobby.links, lobby.url).filter((l) => !visited.has(l.href) && l.href !== signup?.href).slice(0, 2)) {
+  for (const h of firstExit ? helpLinks(lobby.links, lobby.url).filter((l) => !visited.has(l.href) && l.href !== signup?.href).slice(0, 2) : []) {
     if (Date.now() > helpUntil) { tried.push("help-page stopped at the time budget"); break; }
+    if (pastDeadline()) { tried.push(`help page ${h.href} skipped (casino deadline)`); break; }
     visited.add(h.href);
     try {
       await page.goto(h.href, { waitUntil: "domcontentloaded", timeout: 30000 });
       const sub = await readLobby(page, { quietMs: 3000, maxMs: 10000 });
-      const at = page.url();
+      const at = page.url(), text = await bodyText(page);
+      // An app that routes the help path to its lobby shows the lobby again: its links and clickables were tried already.
+      if (isLobby(text) || isShellOf(text, lobbyRef, lobbyText)) { tried.push(`help page ${h.href} (lobby shell)`); continue; }
       const { cands: hc, texts } = await ownPageCands(sub, sub.links, at);
       const clicks = [...sub.clickables.filter((c) => texts.includes(c.text)), ...sub.clickables.filter((c) => !texts.includes(c.text))];
       dbg("help page", h.href, "candidates:", hc.map((c) => `${c.score} ${c.href}`).join(" | "), "clickables:", clicks.map((c) => `"${c.text}"`).join(" | "));
@@ -1019,6 +1044,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (r) return r;
       let click = clicks[0];
       if (!click || Date.now() > helpUntil) continue;
+      if (pastDeadline()) { tried.push(`help page ${h.href} clickable skipped (casino deadline)`); break; }
       if (page.url() !== at) {
         await page.goto(at, { waitUntil: "domcontentloaded", timeout: 30000 });
         click = (await readLobby(page, { quietMs: 3000, maxMs: 10000 })).clickables.find((x) => x.text === click.text);
@@ -1040,7 +1066,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const guessUntil = Date.now() + 180000; // the whole guessing phase, sitemap included, gets three minutes
   // The sitemap, following an index to its first few child sitemaps (skipping game, blog and media sitemaps).
   const sitemap = async (u) => {
-    if (Date.now() > guessUntil) return { index: false, locs: [] };
+    if (Date.now() > guessUntil || pastDeadline()) return { index: false, locs: [] };
     try {
       await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
       const xml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => "");
@@ -1059,6 +1085,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     for (const href of list) {
       if (guessed.has(href)) continue;
       if (Date.now() > guessUntil) { if (!budgetNoted) tried.push("guessing stopped at the time budget"); budgetNoted = true; return null; }
+      if (pastDeadline()) { if (!budgetNoted) tried.push("guessing stopped (casino deadline)"); budgetNoted = true; return null; }
       guessed.add(href);
       try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
       if (await dismissCookies(page)) await sleep(1500);
@@ -1083,6 +1110,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // may say so (a VIP level page is not the terms: starzbet.com; a voucher's terms read like terms: sbotop), so the pass
   // runs while Jev is up. A page it rejects as a promotion's has its general-terms siblings guessed, within the budget.
   for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) {
+    if (pastDeadline()) { tried.push("low-score links skipped (casino deadline)"); break; }
     if (!jevEnabled() || jevDown) { tried.push(`low-score links skipped (Jev ${jevEnabled() ? "down" : "off"})`); break; }
     const r = await tryLink({ ...c, lowScore: true });
     if (r) return { ...r, via: "low-score link" };
@@ -1092,8 +1120,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
   // The search ended without the terms, whether or not the lobby offered candidates (an affiliate site's own /terms page
   // is rightly rejected: 2aries.com, legolas.bet): Jev says what this page is (an affiliate site, a notice in a language
-  // the patterns miss). Asked here only, so once per casino; a wall returned earlier.
-  if (jevEnabled() && !jevDown) {
+  // the patterns miss). Asked here only, and on the first exit that reached the lobby only, so once per casino; a wall
+  // returned earlier.
+  if (firstExit && jevEnabled() && !jevDown) {
     try {
       const captions = [...lobby.links.filter((l) => l.footer).map((l) => l.text), ...lobby.clickables.map((c) => c.text)].filter(Boolean).slice(0, MAX_ENTRIES).map((t) => clip(t, 60));
       const q = lobbyQuestion({ url: lobby.url, title: lobbyTitle, text: lobbyText, captions });

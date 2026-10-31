@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { docx } from "./docx-fixture.mjs";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor, helpLinks } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor, helpLinks, findSignupInPage, modalPartsInPage } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -1578,7 +1578,7 @@ test("a cookie wall on a tab a terms click opened is dismissed before the tab is
 
 // goluckycasino.com: no terms link on the lobby; its footer's "Support" page is where the legal pages hang.
 const SUPPORT_PAGE = (body) => `<!doctype html><html><head><title>Support</title></head><body><main><h1>Support</h1><p>${"Our support team is here to help you around the clock. ".repeat(10)}</p>${body}</main></body></html>`;
-test("helpLinks: the lobby's own help, support, FAQ, legal, about, info and contact pages, footer first, never login, affiliate, blog or promo", () => {
+test("helpLinks: the lobby's own legal, support, FAQ, about, info and contact pages, best kind first, never login, affiliate, blog, promo, game, bonus or security pages, nor the lobby again", () => {
   const o = "https://casino.test";
   const links = [
     { href: `${o}/faq`, text: "FAQ", footer: false }, { href: `${o}/support`, text: "Support", footer: true },
@@ -1588,6 +1588,12 @@ test("helpLinks: the lobby's own help, support, FAQ, legal, about, info and cont
     { href: `${o}/docs/info.pdf`, text: "Info", footer: true }, { href: `${o}/games`, text: "Games", footer: true },
   ];
   assert.deepEqual(helpLinks(links, `${o}/`).map((l) => l.href), [`${o}/support`, `${o}/en/customer-service`, `${o}/faq`]);
+  // By kind: legal, then support or help, then FAQ, then about, info or contact; the footer's first within a kind.
+  const footer = (pairs) => pairs.map(([path, text]) => ({ href: `${o}${path}`, text, footer: true }));
+  assert.deepEqual(helpLinks(footer([["/faq", "FAQ"], ["/about-us", "About Us"], ["/support", "Support"], ["/contact", "Contact"], ["/legal-info", "Legal"]]), `${o}/`).map((l) => l.href),
+    [`${o}/legal-info`, `${o}/support`, `${o}/faq`, `${o}/about-us`, `${o}/contact`]);
+  // A game's, a bonus's or a security page, and the lobby with only a query or a hash, are not help pages.
+  assert.deepEqual(helpLinks(footer([["/game-info/starburst", "Starburst"], ["/bonus-info", "Bonus info"], ["/about-bonuses", "About our bonuses"], ["/information-security", "Information security"], ["/?page=about", "About"], ["/#help", "Help"], ["/slots/help", "Help"]]), `${o}/`), []);
 });
 
 test("a lobby with no terms link: the terms linked from its support page are found (via help-page); a support page without one is noted and the guesses still run", async () => {
@@ -1675,4 +1681,85 @@ test("a lobby whose terms link Jev rejects is still classified by Jev's lobby ju
       assert.ok(!casino.text, `accepted ${casino.href}`);
     } finally { await browser.close(); }
   });
+});
+
+// goluckycasino.com's footer order: "FAQ · About Us · Support". The support page, where the legal pages hang, is opened
+// although two other help pages come before it.
+test("of a footer's FAQ, About and Support pages, the support page is opened first and its terms found", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      await site(page, {
+        "/": LOBBY(`<a href="/faq">FAQ</a><a href="/about-us">About Us</a><a href="/support">Support</a><a href="/privacy">Privacy Policy</a>`),
+        "/faq": SUPPORT_PAGE(""), "/about-us": SUPPORT_PAGE(""), "/support": SUPPORT_PAGE(`<p><a href="/terms.html">Terms and Conditions</a></p>`), "/terms.html": TERMS_PAGE(),
+      });
+      await page.goto("https://casino.test/");
+      read.length = 0;
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+      assert.ok(!read.includes("/faq") && !read.includes("/about-us"), read.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+// A help path an app routes to its lobby shows the lobby again: its clickables were clicked on the lobby already.
+test("a help page that shows the lobby again is left as the lobby shell, and the lobby's clickable is not clicked a second time", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      let clicks = 0;
+      const lobbyHtml = LOBBY(`<a href="/help">Help</a><span onclick="fetch('/clicked')">Terms &amp; Conditions</span>`);
+      await page.route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/clicked") { clicks++; return r.fulfill({ status: 204, body: "" }); }
+        if (p === "/" || p === "/help") return r.fulfill({ status: 200, contentType: "text/html", body: lobbyHtml });
+        return r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(r.tried.includes("help page https://casino.test/help (lobby shell)"), r.tried.join(" | "));
+      assert.equal(clicks, 1, `the lobby's clickable was clicked ${clicks} times: ${r.tried.join(" | ")}`);
+    } finally { await browser.close(); }
+  });
+});
+
+// The casino's budget: past `deadline` the help and modal steps, the guesses and the low-score pass open nothing; on an
+// exit after the first that reached the lobby (`firstExit: false`) the help and modal steps do not run.
+test("past the casino deadline the help page, the sign-up modal and the guesses are skipped; on a later exit the help and modal steps do not run", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      await site(page, { "/": SIGNUP_LOBBY(`<button class="btn" onclick="openReg()">Sign up</button>`, `<a href="/terms.html">Terms &amp; Conditions</a>`).replace("</footer>", `<a href="/support">Support</a></footer>`), "/support": SUPPORT_PAGE(""), "/terms-and-conditions": TERMS_PAGE() });
+      const search = async (opts) => { await page.goto("https://casino.test/"); const lobby = await readLobby(page, { quietMs: 2000 }); read.length = 0; const t0 = Date.now(); return { ...(await fetchTerms(page, lobby, { notes: [] }, opts)), ms: Date.now() - t0 }; };
+      const late = await search({ deadline: Date.now() - 1 });
+      assert.equal(late.text, "", `accepted ${late.href}`);
+      for (const line of ['signup modal "Sign up" skipped (casino deadline)', "help page https://casino.test/support skipped (casino deadline)", "guessing stopped (casino deadline)"]) assert.ok(late.tried.includes(line), `${line}: ${late.tried.join(" | ")}`);
+      assert.deepEqual(read, [], "nothing was opened");
+      assert.ok(late.ms < 5000, `took ${late.ms} ms`);
+      const later = await search({ firstExit: false });
+      assert.equal(later.href, "https://casino.test/terms-and-conditions", later.tried.join(" | "));
+      assert.ok(!later.tried.some((t) => /^(help page|signup modal)/.test(t)), later.tried.join(" | "));
+      assert.ok(!read.includes("/support"), read.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("findSignupInPage: not a form's submit button or a sign-up through another service; modalPartsInPage: a popup named by its id", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const find = () => page.evaluate(`(${findSignupInPage})(${JSON.stringify(String.raw`\b(sign[\s-]?up|register|join( now)?|create (an )?account|registration)\b`)}, ${JSON.stringify(String.raw`log\s?in|sign\s?in|affiliate|terms|conditions|google|facebook|apple|telegram|steam|wallet|metamask|table|game`)})`);
+    await page.setContent(`<html><body><form><input name="email"><button>Register</button><input type="submit" value="Sign up"></form><button>Sign up with Google</button><button>Join table</button><a href="#">Join now</a></body></html>`);
+    assert.equal(await find(), "Join now");
+    await page.setContent(`<html><body><form><button>Register</button></form></body></html>`);
+    assert.equal(await find(), "");
+    await page.setContent(`<html><body><div id="registerPopupBox"><a href="https://casino.test/terms.html">Terms</a></div><a href="https://casino.test/other">Other</a></body></html>`);
+    assert.deepEqual((await page.evaluate(modalPartsInPage)).hrefs, ["https://casino.test/terms.html"]);
+  } finally { await browser.close(); }
 });
