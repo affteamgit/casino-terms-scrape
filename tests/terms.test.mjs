@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -916,5 +916,85 @@ test("readLobby: an image-only link takes its caption from aria-label, then titl
     assert.equal(text("https://c.com/b"), "Title caption");
     assert.equal(text("https://c.com/c"), "Uslovi korišćenja");
     assert.equal(text("https://c.com/d"), "");
+  } finally { await browser.close(); }
+});
+
+// A sentence only the framed document holds: the page around the frame never says it.
+const FRAMED = `<!doctype html><html><head><title>Terms and Conditions</title></head><body><h1>Terms and Conditions</h1><p>Only the framed document says this sentence about the governing law of Malta.</p>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("")}</body></html>`;
+
+test("a terms click that opens a new tab reads the tab and closes it (wildcasino.ag)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      // routed on the context: the tab the click opens is another page
+      await site(page.context(), {
+        "/": LOBBY(`<a href="#" onclick="window.open('/terms-popup.html')">Terms &amp; Conditions</a>`),
+        "/terms-popup.html": TERMS_PAGE(),
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+      assert.equal(r.via, "click");
+      assert.match(r.text, /These terms and conditions govern/);
+      assert.equal(page.context().pages().length, 1, "the tab is closed");
+    } finally { await browser.close(); }
+  });
+});
+
+test("a terms click that shows a modal with an iframe reads the frame's document (slotmagie.de, rocket.run)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page.context(), {
+        "/": LOBBY(`<button onclick="document.getElementById('m').style.display = 'block'">Terms &amp; Conditions</button>`,
+          `<div id="m" style="display:none"><iframe src="/terms-frame.html" width="800" height="600"></iframe></div>`),
+        "/terms-frame.html": FRAMED,
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.via, "click", r.tried.join(" | "));
+      assert.equal(r.frame, true);
+      assert.equal(r.href, "https://casino.test/terms-frame.html");
+      assert.match(r.text, /governing law of Malta/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a terms page whose body is an iframe is read from the frame", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page.context(), {
+        "/": LOBBY(`<a href="/terms.html">Terms and Conditions</a>`),
+        "/terms.html": `<!doctype html><html><head><title>Terms</title></head><body><h1>Terms</h1><p>${"Read our rules below. ".repeat(8)}</p><iframe src="/terms-doc.html" width="800" height="600"></iframe></body></html>`,
+        "/terms-doc.html": FRAMED,
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.frame, true);
+      assert.match(r.text, /governing law of Malta/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("frameText: the longest frame that passes, never a PDF's frame", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const pages = { "/terms.pdf": FRAMED, "/short.html": "<html><body><p>Short.</p></body></html>", "/doc.html": FRAMED, "/longer.html": FRAMED.replace("</body>", `<p>${GENERAL(13)}</p></body>`) };
+    await site(page, { ...pages, "/": `<html><body><iframe src="/terms.pdf"></iframe><iframe src="/short.html"></iframe></body></html>` });
+    await page.goto("https://casino.test/");
+    await page.waitForLoadState("load");
+    assert.equal(await frameText(page, readsLikeTerms), null, "a .pdf frame is not read, a short frame does not count");
+    await site(page, { ...pages, "/": `<html><body><iframe src="/doc.html"></iframe><iframe src="/longer.html"></iframe></body></html>` });
+    await page.goto("https://casino.test/");
+    await page.waitForLoadState("load");
+    const f = await frameText(page, readsLikeTerms);
+    assert.equal(f.url, "https://casino.test/longer.html");
+    assert.equal(await frameText(page, () => false), null, "want decides");
   } finally { await browser.close(); }
 });

@@ -63,6 +63,21 @@ export async function bodyText(page) {
   return page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
 }
 
+/**
+ * A document shown in an iframe (a modal's frame, a page whose body is a frame): the longest frame text of `minChars`
+ * or more that passes `want`, with the frame's URL ("" for about:blank or srcdoc), or null. Playwright evaluates in
+ * cross-origin frames too. A PDF's frame is tryPdf's, and a frame that does not answer in 3 s is skipped.
+ */
+export async function frameText(page, want, minChars = 1500) {
+  let best = null;
+  for (const fr of page.frames()) {
+    if (fr === page.mainFrame() || /\.pdf(\?|$)/i.test(fr.url())) continue;
+    const text = await Promise.race([fr.evaluate(() => document.body?.innerText || "").catch(() => ""), sleep(3000).then(() => "")]);
+    if (text.length >= minChars && (!best || text.length > best.text.length) && want(text)) best = { text, url: /^https?:/.test(fr.url()) ? fr.url() : "" };
+  }
+  return best;
+}
+
 // A bare 403/451 is the casino's answer, not a page still loading: it is read once, without the idle and challenge waits.
 export async function settle(page, httpStatus = 0) {
   await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
@@ -310,12 +325,15 @@ export async function readDoc(page, budget = 25000, want = (t) => t.length >= 50
       const h = await hidden(t);
       if (h && (settled || Math.abs(h.length - lastHidden) <= h.length * 0.02)) return { ok: true, text: h, hidden: true };
       lastHidden = h ? h.length : -1;
+      // Settled and not the document: the document may be in a frame (a page whose body is an iframe).
+      if (settled) { const f = await frameText(page, want); if (f) return { ok: true, text: f.text, frame: true, frameUrl: f.url }; }
     }
     await sleep(1500);
   }
   const t = await bodyText(page);
   const wall = DOC_WALL.test(t.slice(0, 1500));
   if (!wall) { const h = await hidden(t); if (h) return { ok: true, text: h, hidden: true }; }
+  if (!wall && !want(t)) { const f = await frameText(page, want); if (f) return { ok: true, text: f.text, frame: true, frameUrl: f.url }; }
   return { ok: t.length >= 500 && !wall && !placeholder(t), text: t, note: wall ? "wall" : t.length < 500 ? "thin" : placeholder(t) ? "placeholder" : "still loading" };
 }
 
@@ -470,7 +488,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // link whose caption or path names a product or a promotion without also saying casino (elarabet's "Sportsbook Terms
   // & Conditions" read like terms and were stored as the general terms).
   const jevOnly = (c) => namesProduct(c) || (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
-  const pageMeta = () => page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
+  const pageMeta = (p = page) => p.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: p.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read
   // in Node. When the page may not read them (a file host without CORS headers, for one), page.request fetches them
@@ -537,7 +555,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (await expandSections(page)) {
       const d = await readDoc(page, 10000, readsLikeTerms);
       dbg("fuller expanded", page.url(), r.text.length, "->", d.text.length, "chars");
-      if (d.ok && readsLikeTerms(d.text) && d.text.length > r.text.length) r = { ...r, text: d.text, hidden: !!d.hidden };
+      if (d.ok && readsLikeTerms(d.text) && d.text.length > r.text.length) r = { ...r, text: d.text, hidden: !!d.hidden, frame: !!d.frame };
       if (r.text.length >= 5000) return r;
     }
     const at = page.url(), bare = (u) => u.replace(/[?#].*$/, "").replace(/\/$/, "");
@@ -592,7 +610,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
     const good = d.ok && await isTermsPage(d.text, await pageMeta(), { jevOnly: jevOnly(c) });
     dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, tried });
+    if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, frame: !!d.frame, tried });
     tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
     // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
     // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
@@ -600,9 +618,22 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
     return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
   };
-  // Clicks a clickable on the page at `at` and reads what it opened: the app navigates, or opens the document in place.
-  // On a lobby an in-place document has to add 2,000 characters; on a hub (`hub`), where a tab replaces one policy with
-  // another, the text has to change (another start and a length 5% or more apart).
+  // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
+  // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile.
+  const readPopup = async (np, target, at, hub) => {
+    try {
+      await np.waitForLoadState("domcontentloaded").catch(() => {});
+      const d = await readDoc(np, 35000, readsLikeTerms), url = np.url();
+      dbg("click", target.text, "opened a tab", url, d.text.length, "chars");
+      if (d.ok && await isTermsPage(d.text, await pageMeta(np), { fast: true })) return { r: { href: url, text: d.text, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
+      tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} → ${url} (${d.ok ? "not terms-like" : d.note})`);
+      return { navigated: false, d };
+    } finally { await np.close().catch(() => {}); }
+  };
+  // Clicks a clickable on the page at `at` and reads what it opened: the app navigates, opens a new tab, or opens the
+  // document in place. On a lobby an in-place document has to add 2,000 characters; on a hub (`hub`), where a tab
+  // replaces one policy with another, the text has to change (another start and a length 5% or more apart). When
+  // nothing of that happened, the document may be in a frame (a modal's iframe: slotmagie.de, rocket.run).
   const clickOpen = async (target, at, hub = false) => {
     const before = await bodyText(page);
     // What the page hides, to tell a document the click opened from the page's own text (megafrenzy.com).
@@ -612,22 +643,37 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // A navigation is a new page: another path. A new query or hash on the same page (betportal's ?terms=38 opens a
     // promotion's terms over the lobby) is judged as opened in place.
     const moved = () => { try { const a = new URL(page.url()), b = new URL(at); return a.origin !== b.origin || a.pathname.replace(/\/$/, "") !== b.pathname.replace(/\/$/, ""); } catch { return page.url() !== at; } };
+    // A new tab is any page the context opens from just before the click until 8 s after it.
+    let opened = null;
+    const popup = page.context().waitForEvent("page", { timeout: 8000 }).then((p) => (opened = p), () => null);
     // A script click: the element may sit under an overlay or outside the viewport, which a real click refuses.
     await page.evaluate((sel) => { const el = document.querySelector(sel); el.scrollIntoView({ block: "center" }); el.click(); }, target.sel);
-    for (let i = 0; i < 8 && !moved() && !changed(await bodyText(page)); i++) await sleep(1500);
+    // The wait outlasts the 8 s listen unless the page moved or grew first; a tab that opens after that is closed unread.
+    for (let i = 0; i < 8 && !opened && !moved() && !changed(await bodyText(page)); i++) await sleep(1500);
+    if (opened) return readPopup(opened, target, at, hub);
+    popup.then((p) => p && p.close().catch(() => {}));
     let d = await readDoc(page, 15000, readsLikeTerms);
     const navigated = moved();
     if ((navigated || changed(d.text)) && !readsLikeTerms(d.text) && await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms);
     dbg("click", target.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
     // No navigation and the hidden text is the page's own: nothing opened, whatever it says about terms.
     const unchanged = !navigated && d.hidden && sameAsLobby(d.text, pageHidden);
+    // Nothing opened on the page itself: a frame's document (readDoc may have found it already) is judged as opened in place.
+    if (!navigated && (d.frame || unchanged || !changed(d.text))) {
+      const f = d.frame ? { text: d.text, url: d.frameUrl } : await frameText(page, readsLikeTerms);
+      if (f) {
+        if (await isTermsPage(f.text, { ...await pageMeta(), url: f.url || at }, { fast: fastInPlace(f.text) })) return { r: { href: f.url || `${at}#"${target.text}"`, text: f.text, via: "click", frame: true, tried } };
+        tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (opened a frame${f.url ? ` ${f.url}` : ""}, not terms-like)`);
+        return { navigated, d };
+      }
+    }
     // Opened in place, the document is what the click added: the page around it (a lobby's "T&Cs" captions) is not
     // judged with it (betportal's promotion modal passed as terms on the lobby's words).
     const doc = navigated || d.hidden ? d.text : addedText(d.text, before);
     // Opened in place, the pattern may accept it only under a general-terms heading with no promotion in sight
     // (fastInPlace); otherwise (betportal's "SPOOKY FRIDAY / 50 % FREDAGSBONUS" modal) only Jev may accept it.
     const fast = navigated || fastInPlace(doc);
-    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, tried } };
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
     tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : !unchanged && changed(d.text) ? "opened, not terms-like" : "nothing opened"})`);
     return { navigated, d };
   };
@@ -728,7 +774,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // the terms check.
     const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && sameAsLobby(d.text, lobbyHidden)) && (await isTermsPage(d.text, await pageMeta()));
     dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, tried });
+    if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, frame: !!d.frame, tried });
     const hopped = await hopFrom(d, guessUntil);
     if (hopped) return hopped;
   }
