@@ -169,35 +169,95 @@ test("termsPageQuestion caps the text and headings; acceptsPage applies the thre
   assert.equal(acceptsPage(null), false);
 });
 
-test("askJev: null without a key; retries one 429; returns the answers; throws on other errors", async () => {
+const reply = (status, text = "", body = { answers: {} }) => ({ status, ok: status >= 200 && status < 300, headers: new Headers(), text: async () => text, json: async () => body });
+// A fake fetch answering from a sequence (a function entry is called: it may throw), and a fake sleep recording its delays.
+const sequence = (...steps) => { const calls = []; const fetch = async (url, init) => { calls.push({ url, init }); const s = steps[Math.min(calls.length - 1, steps.length - 1)]; return typeof s === "function" ? s() : s; }; return { fetch, calls }; };
+const recorder = () => { const delays = []; return { sleep: async (ms) => { delays.push(ms); }, delays }; };
+
+test("askJev: null without a key; sends the key and the pinned model; a malformed 200 is a failure", async () => {
   delete process.env.TYPESAFE_API_KEY;
   assert.equal(await askJev({}, {}), null);
   process.env.TYPESAFE_API_KEY = "test-key";
-  const calls = [];
-  const fetchFn = async (url, init) => {
-    calls.push({ url, init });
-    if (calls.length === 1) return { status: 429, ok: false, headers: new Headers({ "retry-after": "0" }), text: async () => "slow down" };
-    return { status: 200, ok: true, headers: new Headers(), json: async () => ({ model: "jev-1.14.0", answers: { x: { type: "noul", noul: 0.5 } } }) };
-  };
-  const answers = await askJev({ a: 1 }, { x: { type: "noul", instructions: "?" } }, { fetchFn });
-  assert.deepEqual(answers, { x: { type: "noul", noul: 0.5 } });
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1].init.headers.authorization, "Bearer test-key");
-  assert.equal(JSON.parse(calls[1].init.body).model, "jev-1.14.0");
-  // a second 429 is not retried again
-  let n429 = 0;
-  await assert.rejects(askJev({}, {}, { fetchFn: async () => { n429++; return { status: 429, ok: false, headers: new Headers({ "retry-after": "0" }), text: async () => "slow" }; } }), /jev http 429/);
-  assert.equal(n429, 2);
-  // retry-after is honoured
-  let t0 = 0, gap = 0, k = 0;
-  await askJev({}, {}, { fetchFn: async () => { if (k++ === 0) { t0 = Date.now(); return { status: 429, ok: false, headers: new Headers({ "retry-after": "1" }), text: async () => "" }; } gap = Date.now() - t0; return { status: 200, ok: true, headers: new Headers(), json: async () => ({ answers: {} }) }; } });
-  assert.ok(gap >= 900, `waited ${gap}ms`);
-  // a 200 without an answers object is a failure, not undefined
-  for (const body of [{}, { answers: null }, { answers: "x" }, null]) {
-    await assert.rejects(askJev({}, {}, { fetchFn: async () => ({ status: 200, ok: true, headers: new Headers(), json: async () => body }) }), /malformed response/);
-  }
-  await assert.rejects(askJev({}, {}, { fetchFn: async () => ({ status: 500, ok: false, headers: new Headers(), text: async () => "boom" }) }), /jev http 500/);
-  delete process.env.TYPESAFE_API_KEY;
+  try {
+    const { fetch, calls } = sequence(reply(200, "", { model: "jev-1.14.0", answers: { x: { type: "noul", noul: 0.5 } } }));
+    const { sleep, delays } = recorder();
+    assert.deepEqual(await askJev({ a: 1 }, { x: { type: "noul", instructions: "?" } }, { fetch, sleep }), { x: { type: "noul", noul: 0.5 } });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(delays, []);
+    assert.equal(calls[0].init.headers.authorization, "Bearer test-key");
+    assert.equal(JSON.parse(calls[0].init.body).model, "jev-1.14.0");
+    for (const body of [{}, { answers: null }, { answers: "x" }, null]) {
+      const f = sequence(reply(200, "", body));
+      await assert.rejects(askJev({}, {}, { fetch: f.fetch, sleep }), /malformed response/);
+      assert.equal(f.calls.length, 1, "a malformed answer is not retried");
+    }
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
+test("askJev: an overloaded API (529) answered twice then 200 resolves after waits of 2 s and 5 s", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    const { fetch, calls } = sequence(reply(529, '{"detail":{"error_type":"system_overloaded"}}'), reply(529, "overloaded"), reply(200, "", { answers: { ok: { type: "noul", noul: 1 } } }));
+    const { sleep, delays } = recorder();
+    assert.deepEqual(await askJev({}, {}, { fetch, sleep }), { ok: { type: "noul", noul: 1 } });
+    assert.equal(calls.length, 3);
+    assert.deepEqual(delays, [2000, 5000]);
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
+test("askJev: four failures in a row throw the last error in the `jev http <status>: <body>` form, after waits of 2, 5 and 10 s", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    const { fetch, calls } = sequence(reply(529, "first"), reply(503, "second"), reply(500, "third"), reply(529, '{"detail":{"error_type":"system_overloaded"}}'));
+    const { sleep, delays } = recorder();
+    await assert.rejects(askJev({}, {}, { fetch, sleep }), (e) => { assert.equal(e.message, 'jev http 529: {"detail":{"error_type":"system_overloaded"}}'); return true; });
+    assert.equal(calls.length, 4, "four attempts, no more");
+    assert.deepEqual(delays, [2000, 5000, 10000]);
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
+test("askJev: 429 and every 5xx are retried", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    for (const status of [429, 500, 502, 503, 504, 529]) {
+      const { fetch, calls } = sequence(reply(status, "busy"), reply(200, "", { answers: {} }));
+      const { sleep, delays } = recorder();
+      assert.deepEqual(await askJev({}, {}, { fetch, sleep }), {}, `status ${status}`);
+      assert.equal(calls.length, 2, `status ${status}`);
+      assert.deepEqual(delays, [2000], `status ${status}`);
+    }
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
+test("askJev: a 4xx other than 429 throws at once, with no wait and no second call", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    for (const status of [400, 401, 403, 404, 422]) {
+      const { fetch, calls } = sequence(reply(status, "bad request"), reply(200, "", { answers: {} }));
+      const { sleep, delays } = recorder();
+      await assert.rejects(askJev({}, {}, { fetch, sleep }), new RegExp(`^Error: jev http ${status}: bad request$`));
+      assert.equal(calls.length, 1, `status ${status}`);
+      assert.deepEqual(delays, [], `status ${status}`);
+    }
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
+test("askJev: a network failure (TypeError: fetch failed) twice then 200 resolves after waits of 2 s and 5 s; four in a row throw the last", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    const down = () => { throw new TypeError("fetch failed"); };
+    const a = sequence(down, down, reply(200, "", { answers: { y: { type: "noul", noul: 0.1 } } }));
+    const ra = recorder();
+    assert.deepEqual(await askJev({}, {}, { fetch: a.fetch, sleep: ra.sleep }), { y: { type: "noul", noul: 0.1 } });
+    assert.equal(a.calls.length, 3);
+    assert.deepEqual(ra.delays, [2000, 5000]);
+    let n = 0;
+    const b = sequence(() => { throw new TypeError(`fetch failed ${++n}`); });
+    const rb = recorder();
+    await assert.rejects(askJev({}, {}, { fetch: b.fetch, sleep: rb.sleep }), /^TypeError: fetch failed 4$/);
+    assert.equal(b.calls.length, 4);
+    assert.deepEqual(rb.delays, [2000, 5000, 10000]);
+  } finally { delete process.env.TYPESAFE_API_KEY; }
 });
 
 test("jevEnabled follows the key", () => {

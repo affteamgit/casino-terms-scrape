@@ -30,17 +30,33 @@ const slug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(
 // A non-footer link is shown to Jev only when it reads legal: those words, or the terms words of any language.
 const LEGAL = new RegExp(`terms|conditions|\\btos\\b|legal|agreement|rules|policy|privacy|regulamin|\\bagb\\b|bedingungen|condi|termos|${TERMS_TEXT.source}`, "i");
 
-/** One request. null without a key; the answers object otherwise; throws on failure after one retried 429. */
-export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fetch } = {}) {
+const RETRY_DELAYS = [2000, 5000, 10000]; // waits before attempts 2, 3 and 4
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Overloaded or failing on Jev's side (the 48-minute 529 outage of the full run): worth another try. Any other 4xx is not. */
+const retryable = (status) => status === 429 || status >= 500;
+
+/**
+ * One request. null without a key; the answers object otherwise. A 429, a 5xx (529 overloaded included) or a network
+ * failure is tried again after 2 s, 5 s and 10 s (four attempts); the last failure is thrown as it came, so the `jev`
+ * column's `error:jev http 529: ...` note stays what `retry-ids` looks for. Any other 4xx and a malformed answer throw at once.
+ * `fetch` and `sleep` are for the tests.
+ */
+export async function askJev(state, questions, { timeoutMs = 20000, fetch: f = globalThis.fetch, sleep: s = defaultSleep } = {}) {
   if (!key()) return null;
   for (let i = 0; ; i++) {
-    const res = await fetchFn(API, { method: "POST", headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" }, body: JSON.stringify({ model: MODEL, state, questions }), signal: AbortSignal.timeout(timeoutMs) });
-    if (res.status === 429 && i < 1) {
-      const ra = res.headers.get("retry-after");
-      await new Promise((r) => setTimeout(r, (ra === null || Number.isNaN(Number(ra)) ? 5 : Math.min(30, Number(ra))) * 1000));
-      continue;
+    if (i > 0) await s(RETRY_DELAYS[i - 1]);
+    let res;
+    try {
+      res = await f(API, { method: "POST", headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" }, body: JSON.stringify({ model: MODEL, state, questions }), signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      if (i < RETRY_DELAYS.length) continue;
+      throw err;
     }
-    if (!res.ok) throw new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
+    if (!res.ok) {
+      const err = new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
+      if (retryable(res.status) && i < RETRY_DELAYS.length) continue;
+      throw err;
+    }
     const body = await res.json();
     if (!body || typeof body.answers !== "object" || body.answers === null) throw new Error("jev: malformed response");
     return body.answers;
