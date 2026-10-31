@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { docx } from "./docx-fixture.mjs";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor, helpLinks } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -1522,4 +1522,41 @@ test("a cookie wall on a tab a terms click opened is dismissed before the tab is
   assert.equal(r.via, "click");
   assert.match(r.text, /12\. These terms and conditions govern/);
   assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+// goluckycasino.com: no terms link on the lobby; its footer's "Support" page is where the legal pages hang.
+const SUPPORT_PAGE = (body) => `<!doctype html><html><head><title>Support</title></head><body><main><h1>Support</h1><p>${"Our support team is here to help you around the clock. ".repeat(10)}</p>${body}</main></body></html>`;
+test("helpLinks: the lobby's own help, support, FAQ, legal, about, info and contact pages, footer first, never login, affiliate, blog or promo", () => {
+  const o = "https://casino.test";
+  const links = [
+    { href: `${o}/faq`, text: "FAQ", footer: false }, { href: `${o}/support`, text: "Support", footer: true },
+    { href: `${o}/affiliates`, text: "Affiliate Support", footer: true }, { href: `${o}/blog/help`, text: "Blog", footer: true },
+    { href: "https://other.test/help", text: "Help", footer: true }, { href: `${o}/#contact`, text: "Contact", footer: true },
+    { href: `${o}/en/customer-service`, text: "", footer: true }, { href: `${o}/login`, text: "Help with login", footer: true },
+    { href: `${o}/docs/info.pdf`, text: "Info", footer: true }, { href: `${o}/games`, text: "Games", footer: true },
+  ];
+  assert.deepEqual(helpLinks(links, `${o}/`).map((l) => l.href), [`${o}/support`, `${o}/en/customer-service`, `${o}/faq`]);
+});
+
+test("a lobby with no terms link: the terms linked from its support page are found (via help-page); a support page without one is noted and the guesses still run", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const lobbyHtml = LOBBY(`<a href="/support">Support</a><a href="/privacy">Privacy Policy</a><a href="/responsible-gaming">Responsible Gaming</a>`);
+      await site(page, { "/": lobbyHtml, "/support": SUPPORT_PAGE(`<p><a href="/terms.html">Terms and Conditions</a></p>`), "/terms.html": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+      assert.ok(r.text.length >= 3000);
+      await page.unrouteAll();
+      await site(page, { "/": lobbyHtml, "/support": SUPPORT_PAGE(""), "/terms-and-conditions": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const none = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(none.tried.includes("help page https://casino.test/support (no terms link)"), none.tried.join(" | "));
+      assert.equal(none.href, "https://casino.test/terms-and-conditions", none.tried.join(" | "));
+      assert.equal(none.via, "guess");
+    } finally { await browser.close(); }
+  });
 });

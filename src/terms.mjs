@@ -418,6 +418,25 @@ export function namesProduct(l) {
   return (!/casino/i.test(text) && (PRODUCT.test(text) || PRODUCT_CAPTION.test(text))) || (!/casino/i.test(words) && PRODUCT.test(words));
 }
 
+// A page the legal pages may hang from when the lobby links none (goluckycasino.com's /support), named by its caption
+// or its last path segment; not a login, affiliate, blog or promotion page.
+const HELP_LINK = /\b(help|support|faq|customer[- ](service|support|care)|legal|about|info(rmation)?|contact)/i, HELP_SKIP = /login|affiliate|blog|promo/i;
+/**
+ * The lobby's links to its own help, support, FAQ, legal, about, info or contact pages, footer first, then in page
+ * order; one per page (the hash and a trailing slash ignored), never the lobby itself or a document.
+ */
+export function helpLinks(links, pageUrl) {
+  const own = registrable(host(pageUrl)), bare = (u) => u.replace(/#.*$/, "").replace(/\/$/, ""), seen = new Set([bare(pageUrl)]), out = [];
+  for (const l of [...links.filter((x) => x.footer), ...links.filter((x) => !x.footer)]) {
+    if (!/^https?:/i.test(l.href) || !withinDomain(host(l.href), own) || isDoc(l.href) || seen.has(bare(l.href))) continue;
+    const p = urlPath(l.href), seg = p.split("/").filter(Boolean).pop() || "", text = l.text || "";
+    if (!(HELP_LINK.test(text) || HELP_LINK.test(seg)) || HELP_SKIP.test(`${text} ${p}`)) continue;
+    seen.add(bare(l.href));
+    out.push(l);
+  }
+  return out;
+}
+
 /**
  * The guess phase's URLs in order: the sitemap's terms URLs, the general terms next to a rejected promotion's or
  * product's page (`promoGuesses`), the sibling guesses, then the common paths.
@@ -436,7 +455,8 @@ export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", .
 /**
  * Opens the casino's terms, in this order: Jev's picks, then anchors that score as the general terms (up to three
  * besides the picks); for apps whose footer routes from plain elements, a click on the element that reads like the
- * terms link; the registration page's terms link; the sitemap and the paths casinos commonly use; and last, anchors
+ * terms link; the registration page's terms link; the terms links of the lobby's help or support pages; the sitemap
+ * and the paths casinos commonly use; and last, anchors
  * that scored 0 or less (a promotion's terms, mostly), judged by Jev alone while it is up. Returns the page's text
  * and URL, and what was tried.
  * `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
@@ -848,6 +868,72 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       for (const c of subCands) { const r = await tryLink(c); if (r) return { ...r, via: "signup-page" }; }
       if (!subCands.length) tried.push(`signup page ${signup.href} (no terms link)`);
     } catch (e) { tried.push(`signup page ${signup.href} (${clip(e.message, 60)})`); }
+  }
+  // The links of another of the casino's own pages (its help page), judged like the lobby's: a link that scores as the
+  // general terms (up to two) may be accepted on the pattern; Jev's picks, asked while Jev is up, go first, and one the
+  // heuristic scores 0 or less is Jev's alone (jevOnly). A document the page links (docLinks; `from`: the page) is scored
+  // on its own caption and name whatever host serves it, since the page vouches for it; scored 0 or less it is Jev's
+  // alone (`lowScore`). URLs already opened are left out. `texts`: the clickables Jev picked, to click first.
+  const ownPageCands = async (sub, links, from = "") => {
+    const scored = termsCandidates(links, lobby.url).filter((c) => c.score > 0 && !visited.has(c.href));
+    let jl = [], texts = [];
+    const ents = jevEnabled() && !jevDown ? linkEntries({ url: sub.url, links, clickables: sub.clickables }) : [];
+    if (ents.length) {
+      try {
+        const q = termsLinkQuestions(ents);
+        const answers = await ask(q.state, q.questions);
+        note(linkSummary(answers));
+        const ps = jevPicks(answers, ents);
+        jl = ps.filter((p) => p.kind === "link" && !isMarketplaceUrl(p.href)).map((p) => ({ href: p.href, text: p.text, footer: p.in_footer, score: 99, jev: true, hscore: scored.find((c) => c.href === p.href)?.score ?? termsScore({ href: p.href, text: p.text, footer: p.in_footer }, lobby.url) }));
+        texts = ps.filter((p) => p.kind === "text").map((p) => p.text);
+      } catch (e) { failed(e); }
+    }
+    const docs = from ? docLinks(links, from, ownDomain).map((l) => ({ ...l, from, score: termsScore(l, l.href) ?? 0 })) : [];
+    const out = [];
+    for (const c of [...jl, ...scored.slice(0, 2), ...docs]) {
+      if (!visited.has(c.href) && !out.some((o) => o.href === c.href)) out.push(c.score > 0 ? c : { ...c, lowScore: true });
+    }
+    return { cands: out, texts };
+  };
+  // Opens such candidates in order until one is the terms or `until` passes. A Jev-only candidate is skipped while Jev is
+  // enabled but down; a low-score one, Jev's alone, also without a key.
+  const tryOwnPage = async (list, via, until) => {
+    for (const c of list) {
+      if (Date.now() > until) { tried.push(`${via} stopped at the time budget`); return null; }
+      if (c.lowScore ? !jevEnabled() || jevDown : jevOnly(c) && jevEnabled() && jevDown) { tried.push(`${c.href} (${via}: skipped, Jev ${jevEnabled() ? "down" : "off"})`); continue; }
+      const r = await tryLink(c);
+      if (r) return { ...r, via };
+    }
+    return null;
+  };
+  // A lobby with no terms link may hang its legal pages off its help, support or FAQ page (goluckycasino.com's /support):
+  // up to two of its own such pages (helpLinks), not opened yet, are read like the lobby with the short read (readLobby
+  // dismisses a cookie banner first). Their candidates are opened (ownPageCands), else their first terms clickable is
+  // clicked (Jev's pick first). Two minutes at most for the step.
+  const helpUntil = Date.now() + 120000;
+  for (const h of helpLinks(lobby.links, lobby.url).filter((l) => !visited.has(l.href) && l.href !== signup?.href).slice(0, 2)) {
+    if (Date.now() > helpUntil) { tried.push("help-page stopped at the time budget"); break; }
+    visited.add(h.href);
+    try {
+      await page.goto(h.href, { waitUntil: "domcontentloaded", timeout: 30000 });
+      const sub = await readLobby(page, { quietMs: 3000, maxMs: 10000 });
+      const at = page.url();
+      const { cands: hc, texts } = await ownPageCands(sub, sub.links, at);
+      const clicks = [...sub.clickables.filter((c) => texts.includes(c.text)), ...sub.clickables.filter((c) => !texts.includes(c.text))];
+      dbg("help page", h.href, "candidates:", hc.map((c) => `${c.score} ${c.href}`).join(" | "), "clickables:", clicks.map((c) => `"${c.text}"`).join(" | "));
+      if (!hc.length && !clicks.length) { tried.push(`help page ${h.href} (no terms link)`); continue; }
+      const r = await tryOwnPage(hc, "help-page", helpUntil);
+      if (r) return r;
+      let click = clicks[0];
+      if (!click || Date.now() > helpUntil) continue;
+      if (page.url() !== at) {
+        await page.goto(at, { waitUntil: "domcontentloaded", timeout: 30000 });
+        click = (await readLobby(page, { quietMs: 3000, maxMs: 10000 })).clickables.find((x) => x.text === click.text);
+        if (!click) { tried.push(`click "${clicks[0].text}" on ${at} (gone)`); continue; }
+      }
+      const o = await clickOpen(click, at, true);
+      if (o.r) return { ...o.r, via: "help-page" };
+    } catch (e) { tried.push(`help page ${h.href} (${clip(e.message, 60)})`); }
   }
   // Casinos always have terms, so keep looking: the site's sitemap, then the paths casinos commonly use, opened in
   // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
