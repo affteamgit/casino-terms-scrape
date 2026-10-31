@@ -619,10 +619,12 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
   };
   // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
-  // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile.
+  // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile. A tab whose URL is a
+  // PDF is tryPdf's.
   const readPopup = async (np, target, at, hub) => {
     try {
       await np.waitForLoadState("domcontentloaded").catch(() => {});
+      if (isPdf(np.url())) { const r = await tryPdf({ ...target, href: np.url() }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
       const d = await readDoc(np, 35000, readsLikeTerms), url = np.url();
       dbg("click", target.text, "opened a tab", url, d.text.length, "chars");
       if (d.ok && await isTermsPage(d.text, await pageMeta(np), { fast: true })) return { r: { href: url, text: d.text, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };

@@ -998,3 +998,24 @@ test("frameText: the longest frame that passes, never a PDF's frame", async () =
     assert.equal(await frameText(page, () => false), null, "want decides");
   } finally { await browser.close(); }
 });
+
+test("a terms click that opens a PDF in a new tab reads the PDF and closes the tab", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), pdf = termsPdf();
+      await page.context().route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/terms.pdf") return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf });
+        return p === "/" ? r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="#" onclick="window.open('/terms.pdf')">Terms &amp; Conditions</a>`) }) : r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.via, "click");
+      assert.equal(r.href, "https://casino.test/terms.pdf");
+      assert.match(r.text, /General Terms and Conditions/);
+      assert.equal(page.context().pages().length, 1, "the tab is closed");
+    } finally { await browser.close(); }
+  });
+});
