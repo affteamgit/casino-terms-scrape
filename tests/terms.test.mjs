@@ -1763,3 +1763,42 @@ test("findSignupInPage: not a form's submit button or a sign-up through another 
     assert.deepEqual((await page.evaluate(modalPartsInPage)).hrefs, ["https://casino.test/terms.html"]);
   } finally { await browser.close(); }
 });
+
+// goluckycasino.com's help pages are the lobby's own app: the same long header over the page's own FAQ. Such a page is
+// read, not taken for the lobby shell.
+test("a help page under the lobby's 400-character header, with its own FAQ and a terms link, is read and the terms found", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const head = `<header><p>${"Golucky Casino slots live games jackpots. ".repeat(10)}</p></header>`;
+      const lobbyHtml = LOBBY(`<a href="/support">Support</a><a href="/privacy">Privacy Policy</a>`).replace("<body>", `<body>${head}`);
+      const faq = Array.from({ length: 30 }, (_, i) => `<p>Question ${i + 1}: how do I change setting number ${i + 1} of my profile? Open the menu and pick option ${i + 1}.</p>`).join("");
+      const help = `<!doctype html><html><body>${head}<main><h1>Support</h1>${faq}<p><a href="/terms.html">Terms and Conditions</a></p></main></body></html>`;
+      await site(page, { "/": lobbyHtml, "/support": help, "/terms.html": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(!r.tried.some((t) => /lobby shell/.test(t)), r.tried.join(" | "));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+    } finally { await browser.close(); }
+  });
+});
+
+// Flamez: the site walls its terms page from this exit. The search stops there, before the help and modal steps, so the
+// next exit is still the first to search past the lobby's candidates (scrape.mjs reads `walledEarly`).
+test("a wall on a lobby candidate's page ends the search as walled early, before the help and modal steps", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const wall = `<!doctype html><html><body><h1>Just a moment...</h1><p>${"Checking your browser before accessing the site. ".repeat(20)}</p></body></html>`;
+      await site(page, { "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a><a href="/support">Support</a>`), "/terms-and-conditions": wall, "/support": SUPPORT_PAGE("") });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.walled, true, r.tried.join(" | "));
+      assert.equal(r.walledEarly, true);
+      assert.ok(!r.tried.some((t) => t.startsWith("help page")), r.tried.join(" | "));
+    } finally { await browser.close(); }
+  });
+});

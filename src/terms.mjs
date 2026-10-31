@@ -895,7 +895,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock, de
     pageWalled = false;
     for (const v of [...(en ? [{ ...c, href: en, english: true }] : []), ...(c.href.includes("?") ? [clean(c), c] : [c])]) { const r = await tryLink(v); if (r) return r; }
     // The site walls its deeper pages from this exit (Flamez): nothing else on it will open either.
-    if (pageWalled) return { href: "", text: "", via: "", tried, walled: true };
+    // `walledEarly`: before the help and modal steps, so the next exit still counts as the first (scrape.mjs).
+    if (pageWalled) return { href: "", text: "", via: "", tried, walled: true, walledEarly: true };
   }
   for (const c of lobby.clickables.slice(0, 2)) {
     try {
@@ -1034,8 +1035,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock, de
       await page.goto(h.href, { waitUntil: "domcontentloaded", timeout: 30000 });
       const sub = await readLobby(page, { quietMs: 3000, maxMs: 10000 });
       const at = page.url(), text = await bodyText(page);
-      // An app that routes the help path to its lobby shows the lobby again: its links and clickables were tried already.
-      if (isLobby(text) || isShellOf(text, lobbyRef, lobbyText)) { tried.push(`help page ${h.href} (lobby shell)`); continue; }
+      // An app that routes the help path to its lobby shows the lobby again (its opening and under 1,500 characters of its
+      // own): its links and clickables were tried already. Not isLobby: a help page of the same app shares the lobby's
+      // header (its first 300 characters), and a help centre's length may fall within 5% of the lobby's.
+      if (isShellOf(text, lobbyRef, lobbyText)) { tried.push(`help page ${h.href} (lobby shell)`); continue; }
       const { cands: hc, texts } = await ownPageCands(sub, sub.links, at);
       const clicks = [...sub.clickables.filter((c) => texts.includes(c.text)), ...sub.clickables.filter((c) => !texts.includes(c.text))];
       dbg("help page", h.href, "candidates:", hc.map((c) => `${c.score} ${c.href}`).join(" | "), "clickables:", clicks.map((c) => `"${c.text}"`).join(" | "));

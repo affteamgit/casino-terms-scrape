@@ -213,7 +213,7 @@ async function attempt(job, url, country, type, search = {}) {
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
     // Jev says the lobby is not a casino's (or a notice, a closed or parked site): that is the status, with no terms.
-    return { ...base, searched: true, status: terms.lobbyClass || base.status, ...(terms.lobbyClass && { error: `Jev: the lobby is ${terms.lobbyClass}` }), finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
+    return { ...base, searched: true, status: terms.lobbyClass || base.status, ...(terms.lobbyClass && { error: `Jev: the lobby is ${terms.lobbyClass}` }), finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, walledEarly: !!terms.walledEarly, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
   } finally { live.remove(job.id, browser); await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
@@ -231,7 +231,7 @@ async function run(job) {
   let fallback = null, noTerms = 0, mbTotal = 0;
   // The terms search stops opening pages 2 minutes before the casino's budget runs out, so a reached casino is written as
   // reached, not as a timeout; its help-page, sign-up-modal and lobby-question steps run on the first exit that reached
-  // the lobby only (`reached`: an exit's search has run).
+  // the lobby only (`reached`: an exit's search has run past the lobby's candidates; one walled on a candidate page did not).
   const deadline = Date.now() + CASINO_BUDGET - TERMS_RESERVE;
   let reached = false;
   outer: for (const phase of PROXY_PLAN) for (let u = 0; u < urls.length; u++) {
@@ -246,7 +246,7 @@ async function run(job) {
       if (live.ended(job.id)) break outer; // timed out: its row is written, no more sessions
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
       try { r = await attempt(job, url, c, phase.type, { deadline, firstExit: !reached }); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
-      if (r.searched) reached = true;
+      if (r.searched && !r.walledEarly) reached = true;
       mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
@@ -271,7 +271,7 @@ async function run(job) {
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
           try { r = await attempt(job, url, "direct", phase.type, { deadline, firstExit: !reached }); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
-          if (r.searched) reached = true;
+          if (r.searched && !r.walledEarly) reached = true;
           mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
