@@ -225,8 +225,9 @@ test("termsCandidates: a caption alone in a language the path does not speak is 
 
 test("termsCandidates: rules and policy captions in other languages are not the terms; terms, T&Cs and 'Sport & Casino' are judged by their words", () => {
   const cand = (text, path = "/p/12") => termsCandidates([L(text, `https://x.com${path}`, true)], "https://x.com/");
-  for (const [t, p] of [["Adatvédelmi szabályzat", "/adatvedelem"], ["Pravila igre", "/p/12"], ["Politika privatnosti", "/privatnost"], ["游戏规则", "/p/12"], ["Gizlilik Politikası", "/p/12"]]) assert.deepEqual(cand(t, p), [], t);
-  for (const t of ["Opšti uslovi", "Szabályzat", "Pravila", "Általános szerződési feltételek", "T&Cs"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
+  for (const [t, p] of [["Adatvédelmi szabályzat", "/adatvedelem"], ["Adatkezelési szabályzat", "/p/12"], ["Adatkezelési tájékoztató", "/adatkezeles"], ["Politika privatnosti", "/privatnost"], ["游戏规则", "/p/12"], ["Gizlilik Politikası", "/p/12"]]) assert.deepEqual(cand(t, p), [], t);
+  // "igre" is "of the game" and "igre na sreću" is gambling itself: the Balkan general terms are "Opći uvjeti igre"
+  for (const t of ["Opšti uslovi", "Szabályzat", "Pravila", "Általános szerződési feltételek", "T&Cs", "Opći uvjeti igre", "Opšti uslovi igre", "Pravila igre na sreću"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
   assert.deepEqual(cand("Sport & Casino"), []);
 });
 
@@ -252,4 +253,9 @@ test("promoSiblingGuesses: the general terms next to a rejected bonus or product
     assert.ok(g.length && !g.some((x) => /\/rules\/?$/.test(new URL(x).pathname)), `${u}: ${g.join(" ")}`);
   }
   for (const u of ["https://x.com/en/terms/", "https://x.com/terms-and-conditions", "https://x.com/preferences/terms", "https://x.com/", "not a url"]) assert.deepEqual(promoSiblingGuesses(u), [], u);
+  // the path without the promotion names the terms (/en/terms/): the siblings go beside that terms directory, not into it
+  assert.ok(a.includes("https://x.com/en/terms-and-conditions") && a.includes("https://x.com/en/general-terms"), a.join(" "));
+  assert.ok(!a.some((u) => u.startsWith("https://x.com/en/terms/") && u !== "https://x.com/en/terms/"), a.join(" "));
+  const e = promoSiblingGuesses("https://x.com/rules/bonus");
+  assert.ok(e.includes("https://x.com/terms-and-conditions") && !e.some((u) => u.startsWith("https://x.com/rules/")), e.join(" "));
 });

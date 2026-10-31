@@ -39,10 +39,12 @@ export const RULES_I18N = [
   "规则|規則", // Chinese
 ].join("|");
 // A caption that is a privacy policy or a game's rules in the new languages (the English ones are in NOT_TERMS below).
+// Serbian/Croatian "igre" is no veto: the general terms are "Opći uvjeti igre" / "Opšti uslovi igre", and gambling itself
+// is "igre na sreću" ("Pravila igre" still never counts a page as terms: TERMS_WORDS leaves `pravila` out).
 export const NOT_TERMS_I18N = [
-  "adatvédelm|privatnost|zasebnost|ochrana (osobních|osobných) údajů|gizlilik|confiden[țt]ialitate", // privacy: Hungarian, Serbian/Croatian, Slovenian, Czech/Slovak, Turkish, Romanian
+  "adatvédelm|adatkezel|privatnost|zasebnost|ochrana (osobních|osobných) údajů|gizlilik|confiden[țt]ialitate", // privacy: Hungarian, Serbian/Croatian, Slovenian, Czech/Slovak, Turkish, Romanian
   "隐私|隱私|プライバシー|개인정보", // privacy: Chinese, Japanese, Korean
-  "\\bigr[ae]\\b|spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: Serbian/Croatian, German, Turkish, Chinese, Japanese, Korean, Finnish
+  "spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: German, Turkish, Chinese, Japanese, Korean, Finnish
 ].join("|");
 export const TERMS_TEXT = new RegExp(String.raw`terms|conditions|\bt\s*&\s*cs?\b|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår|${TERMS_I18N}|${RULES_I18N}`, "i");
 // The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
@@ -180,7 +182,8 @@ export function siblingGuesses(links, pageUrl) {
  * The general terms next to a rejected promotion's or product's page, on its host: (i) the path without its promotion or
  * product segments, when what remains names the terms (/en/terms/bonus/ -> /en/terms/); (ii) the last such segment
  * without its promotion or product words, when what remains names the terms (/help/bonus-terms-and-conditions ->
- * /help/terms-and-conditions); (iii) that segment's directory with each of SIBLING_NAMES (/help/terms, ...). No guess
+ * /help/terms-and-conditions); (iii) that segment's directory with each of SIBLING_NAMES (/help/terms, ...), or, when (i)
+ * applies, the directory above its terms-named directories (/en/terms/bonus/ -> /en/terms-and-conditions). No guess
  * keeps a promotion's or product's segment, and none ends in a bare `rules`. [] for a URL whose path names neither.
  */
 export function promoSiblingGuesses(url) {
@@ -191,10 +194,15 @@ export function promoSiblingGuesses(url) {
   const at = (parts, end = "") => `${u.origin}/${parts.join("/")}${end}`;
   const slash = u.pathname.endsWith("/") ? "/" : "", plain = (s) => !namesPromo(s), dir = segs.slice(0, i).filter(plain), out = [];
   const rest = segs.filter(plain);
-  if (rest.length && TERMS_PATH.test(rest.join("/"))) out.push(at(rest, slash));
+  const termsDir = rest.length > 0 && TERMS_PATH.test(rest.join("/"));
+  if (termsDir) out.push(at(rest, slash));
   const stripped = segs[i].split(/[-_]+/).filter((w) => w && !promoWord(w)).join("-");
   if (stripped && TERMS_PATH.test(stripped)) out.push(at([...dir, stripped], slash));
-  for (const n of SIBLING_NAMES) out.push(at([...dir, n]));
+  // Beside a terms directory, not inside it: when (i) found the terms directory (/en/terms/), the siblings go next to it
+  // (/en/terms-and-conditions), not under it (/en/terms/terms-and-conditions).
+  const base = [...dir];
+  while (termsDir && base.length && TERMS_PATH.test(base[base.length - 1])) base.pop();
+  for (const n of SIBLING_NAMES) out.push(at([...base, n]));
   // A bare `rules` page (/sportsbook/rules -> /rules) is a game's or a product's rules as often as the terms.
   return [...new Set(out)].filter((g) => !/(^|\/)rules\/?$/i.test(new URL(g).pathname));
 }
