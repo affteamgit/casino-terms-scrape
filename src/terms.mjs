@@ -557,10 +557,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const judging = (c, fast = true, d = {}) => (c.lowScore || c.elsewhere || (d.frame && !ownUrl(d.frameUrl || "")) ? elsewhere : { fast, jevOnly: jevOnly(c) });
   const pageMeta = (p = page) => p.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: p.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
-  // A file document's bytes (a PDF or a DOCX) are fetched inside the page, so they travel the session's route (its proxy,
-  // its cookies), and read in Node. When the page may not read them (a file host without CORS headers, for one), page.request fetches them
-  // instead: it shares the session's cookies but not its proxy, and leaves from this process (the VPN locally, the
-  // Actions runner on Browserless), which the file hosts allow. Either way a file over 20 MB is not read.
+  // A file document's bytes (a PDF or a DOCX) are fetched inside the page, so they travel the session's route (its
+  // proxy, its cookies), and read in Node. When the page may not read them (a file host without CORS headers, for one),
+  // page.request fetches them instead: it shares the session's cookies but not its proxy, and leaves from this process
+  // (the VPN locally, the Actions runner on Browserless), which the file hosts allow. Either way a file over 20 MB is not read.
   const fileBytes = async (url) => {
     try {
       const b64 = await page.evaluate(async ({ u, max }) => {
