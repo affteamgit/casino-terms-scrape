@@ -2,41 +2,55 @@
 // scored rather than taking the first match: promo cards carry "T&Cs apply" links to the home page or to the
 // promotion's own terms, and those sit above the footer in the DOM.
 const TERMS_PATH = /terms|conditions|\btos\b|\bt-?and-?c|\bt&c|\bagb\b|termos|condi[cç]|r[eè]gles|regulamin|pravila|kurallar|szabály|\blegal\b|general-?rules|user-?agreement|\brules\b/i;
-// The terms words of the languages beyond the first dozen, as regex source: shared by the candidate scoring below, Jev's
-// entry filter, the click texts and the page gate's word count. `\b` does not work on non-Latin scripts, so those words
-// match as substrings; short or common Latin words keep it. "Rules" words (pravila, kurallar, 规则) are included because
-// a terms page is often called "rules": Turkish `kurallar` stays off the possessive "kuralları" of "oyun kuralları" (game rules).
+// The terms words of the languages beyond the first dozen, as regex source. `\b` does not work on non-Latin scripts, so
+// those words match as substrings; short or common Latin words keep it. TERMS_I18N words mean terms and conditions: the
+// candidate scoring, Jev's entry filter, the click texts and the page gate's word count all use them.
 // Known gaps: Greek `όροι` is the accented form only, Hebrew `תנאים` misses the construct "תנאי", Vietnamese needs NFC text.
 export const TERMS_I18N = [
   "voorwaarden", // Dutch
   "\\btermini\\b|condizioni", // Italian
   "\\bt[ée]rminos\\b", // Spanish
-  "\\bpravila\\b|\\buslovi\\b|\\buvjeti\\b|\\bpogoji\\b", // Serbian, Croatian, Bosnian, Slovenian
+  "\\buslovi\\b|\\buvjeti\\b|\\bpogoji\\b", // Serbian, Croatian, Bosnian, Slovenian
   "podm(í|ie)nky", // Czech, Slovak
   "\\btermen(i|ii)\\b", // Romanian
-  "feltételek|szabályzat", // Hungarian
+  "feltételek", // Hungarian
   "όροι", // Greek
-  "\\bkurallar(?![a-zçğıöşü])|şartlar|koşullar", // Turkish
+  "şartlar|koşullar", // Turkish
   "الشروط|ال[أا]حكام", // Arabic
   "תנאים", // Hebrew
   "ข้อกำหนด|เงื่อนไข", // Thai
   "利用規約", // Japanese
-  "条款|條款|规则|規則", // Chinese
+  "条款|條款", // Chinese
   "이용약관|약관", // Korean
   "\\bsyarat|ketentuan|\\bterma\\b", // Indonesian, Malay
   "điều khoản", // Vietnamese
   "\\bnoteikumi\\b", // Latvian
-  "taisyklės", // Lithuanian
   "tingimused", // Estonian
   "умови", // Ukrainian
 ].join("|");
-export const TERMS_TEXT = new RegExp(String.raw`terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår/|${TERMS_I18N}`, "i");
+// Words that name the terms but also a game's rules or a privacy policy ("Pravila igre", "Adatvédelmi szabályzat",
+// "游戏规则"): a link captioned with them is worth showing to Jev and trying as a candidate, but they do not count a
+// page as terms (TERMS_WORDS leaves them out). Turkish `kurallar` stays off the possessive "kuralları" of "oyun kuralları".
+export const RULES_I18N = [
+  "\\bpravila\\b", // Serbian, Croatian, Bosnian, Slovenian
+  "szabályzat", // Hungarian
+  "\\bkurallar(?![a-zçğıöşü])", // Turkish
+  "taisyklės", // Lithuanian
+  "规则|規則", // Chinese
+].join("|");
+// A caption that is a privacy policy or a game's rules in the new languages (the English ones are in NOT_TERMS below).
+export const NOT_TERMS_I18N = [
+  "adatvédelm|privatnost|zasebnost|ochrana (osobních|osobných) údajů|gizlilik|confiden[țt]ialitate", // privacy: Hungarian, Serbian/Croatian, Slovenian, Czech/Slovak, Turkish, Romanian
+  "隐私|隱私|プライバシー|개인정보", // privacy: Chinese, Japanese, Korean
+  "\\bigr[ae]\\b|spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: Serbian/Croatian, German, Turkish, Chinese, Japanese, Korean, Finnish
+].join("|");
+export const TERMS_TEXT = new RegExp(String.raw`terms|conditions|\bt\s*&\s*cs?\b|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår|${TERMS_I18N}|${RULES_I18N}`, "i");
 // A page whose own name is the general terms (the path's last segment) is a candidate whatever its caption says:
 // horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
 const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
 // A product's own terms: the casino's general terms rank above them.
 export const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
-const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
+const NOT_TERMS = new RegExp(String.raw`privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your|${NOT_TERMS_I18N}`, "i");
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
 const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;

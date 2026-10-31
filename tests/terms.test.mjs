@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -877,19 +877,28 @@ test("the lobby judgment fails open: no key, a failed call, and a lobby that has
 });
 
 test("readsLikeTerms: a 2,000-character text counts the terms words of other languages, and ordinary lobby text does not", () => {
-  const sr = "Opšti uslovi korišćenja. " + "Igrač prihvata ove uslovi i pravila igre. ".repeat(60);
+  const sr = "Opšti uslovi korišćenja. " + "Igrač prihvata ove uslovi korišćenja. ".repeat(60);
   assert.ok(sr.length >= 2000 && readsLikeTerms(sr));
   assert.ok(!readsLikeTerms("Opšti uslovi i pravila. ".repeat(50)), "under 2,000 characters");
   assert.ok(readsLikeTerms(("お客様は利用規約に同意するものとします。" + "x".repeat(20)).repeat(80)));
   assert.ok(readsLikeTerms(("Kullanım Şartları ve Koşullar gereği kurallar uygulanır. " + "x".repeat(10)).repeat(40)));
   assert.ok(!readsLikeTerms("Oyun kuralları: slot oyunları, canlı casino ve spor bahisleri. ".repeat(60)), "Turkish game rules are not terms");
+  // rules and policy words alone do not make a page terms: a privacy policy, a game's rules
+  assert.ok(!readsLikeTerms("Adatvédelmi szabályzat. Az adatkezelő személyes adatokat kezel a játékosról. ".repeat(30)), "Hungarian privacy policy");
+  assert.ok(!readsLikeTerms("Pravila igre. Igrač dobija žetone na početku svake runde ruleta. ".repeat(32)), "Serbian game rules");
+  assert.ok(!readsLikeTerms("游戏规则：玩家在每轮开始时下注，赢得的奖金将计入余额。".repeat(80)), "Chinese game rules");
   assert.ok(!readsLikeTerms("Play slots, live casino and jackpots with the best pravilan games. Termination is easy. ".repeat(40)));
 });
 
 test("CLICK_TEXT matches terms captions across languages and not game rules", () => {
   const re = new RegExp(CLICK_TEXT, "i");
   for (const t of ["Şartlar ve Koşullar", "Uslovi korišćenja", "Termeni și condiții", "利用規約", "Voorwaarden", "Términos y condiciones", "Vilkår", "Regler", "Умови використання", "User Agreement", "T & Cs", "Allgemeine Geschäftsbedingungen"]) assert.ok(re.test(t), t);
-  for (const t of ["Oyun Kuralları", "Blackjack", "Slots"]) assert.ok(!re.test(t), t);
+  for (const t of ["Oyun Kuralları", "Blackjack", "Slots", "Sport & Casino"]) assert.ok(!re.test(t), t);
+  // rules-worded captions are clickable candidates, but a privacy policy or a game's rules is skipped
+  for (const t of ["Pravila", "Szabályzat", "Kurallar", "条款"]) assert.ok(re.test(t), t);
+  const skip = new RegExp(CLICK_SKIP, "i");
+  for (const t of ["Adatvédelmi szabályzat", "Pravila igre", "Politika privatnosti", "Gizlilik Politikası", "Oyun Kuralları", "游戏规则", "隐私政策", "Spielregeln"]) assert.ok(skip.test(t), t);
+  for (const t of ["Opšti uslovi", "Şartlar ve Koşullar", "Allgemeine Geschäftsbedingungen", "利用規約"]) assert.ok(!skip.test(t), t);
 });
 
 test("readLobby: an image-only link takes its caption from aria-label, then title, then the image's alt", async () => {

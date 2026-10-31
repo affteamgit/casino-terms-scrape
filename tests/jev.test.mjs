@@ -70,6 +70,13 @@ test("linkEntries: a big footer of game links cannot push the legal links out, a
   assert.equal(odd[0].text, "Zasady");
 });
 
+test("linkEntries: 'Sport & Casino' is not legal, 'T&Cs' is", () => {
+  const links = [...Array.from({ length: 5 }, (_, i) => L(`Link ${i}`, `https://x.com/f/${i}`, true)), L("Sport & Casino", "https://x.com/sc"), L("T&Cs", "https://x.com/tc")];
+  const e = linkEntries({ url: "https://x.com/", links, clickables: [] });
+  assert.equal(e[0].text, "T&Cs");
+  assert.ok(!e.some((x) => x.text === "Sport & Casino"));
+});
+
 test("linkEntries: a captionless footer link with a legal path is kept, one without is not", () => {
   const few = linkEntries({ url: "https://x.com/", links: [L("", "https://x.com/terms", true), L("", "https://x.com/logo", true)], clickables: [] });
   assert.deepEqual(few.map((x) => x.href), ["https://x.com/terms"]);

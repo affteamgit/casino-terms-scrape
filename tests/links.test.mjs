@@ -222,3 +222,10 @@ test("termsCandidates: a caption alone in a language the path does not speak is 
   assert.deepEqual(termsCandidates([L("Oyun Kuralları", "https://x.com/p/12", true)], "https://x.com/"), []);
   assert.deepEqual(termsCandidates([L("Blackjack", "https://x.com/p/12", true)], "https://x.com/"), []);
 });
+
+test("termsCandidates: rules and policy captions in other languages are not the terms; terms, T&Cs and 'Sport & Casino' are judged by their words", () => {
+  const cand = (text, path = "/p/12") => termsCandidates([L(text, `https://x.com${path}`, true)], "https://x.com/");
+  for (const [t, p] of [["Adatvédelmi szabályzat", "/adatvedelem"], ["Pravila igre", "/p/12"], ["Politika privatnosti", "/privatnost"], ["游戏规则", "/p/12"], ["Gizlilik Politikası", "/p/12"]]) assert.deepEqual(cand(t, p), [], t);
+  for (const t of ["Opšti uslovi", "Szabályzat", "Pravila", "Általános szerződési feltételek", "T&Cs"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
+  assert.deepEqual(cand("Sport & Casino"), []);
+});
