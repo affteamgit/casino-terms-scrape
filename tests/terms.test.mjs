@@ -303,6 +303,9 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   assert.equal(st("Registrierung abgeschlossen. Vielen Dank, Ihr Konto wurde angelegt." + pad), "ok", "abgeschlossen is not geschlossen");
   assert.equal(st("Welcome to Example Casino. This bonus is no longer available. Pick another offer below." + pad), "ok", "a promo line");
   assert.equal(st("Welcome back. Your account has been closed at your request. Open a new one below." + pad), "ok", "an account notice");
+  assert.equal(st("Welcome to Example Casino. This casino bonus is no longer available. Pick another offer below." + pad), "ok", "a bonus with casino in front of it");
+  assert.equal(st("We are sorry, this offer is no longer available. Pick another offer below." + pad), "ok", "an offer with we in front of it");
+  assert.equal(st("Our website is no longer available in your browser version. Please update." + pad), "closed", "the site as an explicit subject");
   assert.equal(st("Unser Casino ist dauerhaft geschlossen. Danke fürs Mitspielen." + pad), "closed", "German, the site as subject");
   // the broad geo wording counts at the head of the page only, not in a lobby's footer disclaimer
   const lobby = (footer) => "Welcome to Example Casino. " + "Play slots, live dealer games and sports with fast payouts. ".repeat(40) + footer;
@@ -815,4 +818,60 @@ test("a stub that shows the lobby with a link to the terms document is hopped fr
       assert.equal(r.href, "https://casino.test/docs/terms.pdf");
     } finally { await browser.close(); }
   });
+});
+
+// A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.
+const NO_LINKS_LOBBY = LOBBY(`<a href="/about">About us</a><a href="/blog">Blog</a>`);
+const lobbyAsk = ({ option = "not_gambling_site", p = 0.9, noul = 0.9, log = [], seen = [] } = {}) => async (state, questions) => {
+  if (!questions.kind) return fakeAsk()(state, questions);
+  log.push("kind"); seen.push(state);
+  return { kind: { choice: option, noul, probabilities: { [option]: p, gambling_site: 1 - p } } };
+};
+
+test("a lobby with no terms link is classified by Jev's lobby judgment: not a gambling site becomes lobbyClass not_casino, a gambling site stays unclassified", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": NO_LINKS_LOBBY.replace("<body>", "<head><title>Top Casinos Reviewed</title></head><body>") });
+      const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+      const seen = [];
+      const jev = { notes: [], ask: lobbyAsk({ seen }) };
+      const r = await search(jev);
+      assert.equal(r.lobbyClass, "not_casino");
+      assert.ok(!r.text, "no terms found");
+      assert.ok(jev.notes.includes("lobby:not_gambling_site:0.90"), jev.notes.join(" "));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].page.url, "https://casino.test/");
+      assert.match(seen[0].page.text, /Play slots and live games/);
+      assert.ok(seen[0].page.captions.includes("About us"), seen[0].page.captions.join(","));
+      const casino = await search({ notes: [], ask: lobbyAsk({ option: "gambling_site", p: 0.95 }) });
+      assert.equal(casino.lobbyClass ?? null, null);
+      const unsure = await search({ notes: [], ask: lobbyAsk({ noul: 0.4 }) });
+      assert.equal(unsure.lobbyClass ?? null, null, "an unsure answer leaves the regex result");
+    } finally { await browser.close(); }
+  });
+});
+
+test("the lobby judgment fails open: no key, a failed call, and a lobby that has a terms link never classify", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    await site(page, { "/": NO_LINKS_LOBBY });
+    const log = [];
+    const off = await withoutJev(() => search({ notes: [], ask: lobbyAsk({ log }) }));
+    assert.equal(off.lobbyClass ?? null, null);
+    assert.deepEqual(log, [], "no key, no question");
+    const jev = { notes: [], ask: async () => { throw new Error("boom"); } };
+    const down = await withJevKey(() => search(jev));
+    assert.equal(down.lobbyClass ?? null, null);
+    assert.ok(jev.notes.some((n) => n.startsWith("error:")), jev.notes.join(" "));
+    await page.unroute("https://casino.test/**");
+    await site(page, { "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a>`), "/terms-and-conditions": TERMS_PAGE() });
+    const withLink = await withJevKey(() => search({ notes: [], ask: lobbyAsk({ log }) }));
+    assert.equal(withLink.lobbyClass ?? null, null);
+    assert.ok(withLink.text, "the terms were found");
+    assert.deepEqual(log, [], "the lobby question is not asked when the lobby has a terms link");
+  } finally { await browser.close(); }
 });

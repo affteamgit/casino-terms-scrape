@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, jevEnabled, MAX_ENTRIES } from "../src/jev.mjs";
+import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, jevEnabled, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "../src/jev.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 const betico = {
@@ -179,4 +179,36 @@ test("termsPageQuestion: a product section's terms on a site with other products
   assert.match(q.questions.is_terms.instructions, /govern the whole site \(an online casino, sportsbook or both\)/);
   assert.match(q.questions.is_terms.criteria.false, /the terms of one product section \(sportsbook, poker, bingo, racing, live casino\) of a site that also offers other products/);
   assert.match(q.questions.is_terms.criteria.true, /general terms and conditions, terms of service, terms of use or user agreement/, "true is unchanged");
+});
+
+test("lobbyQuestion: URL, title, the first 3,000 characters and up to 60 captions go to a single Choice with the six options", () => {
+  const captions = Array.from({ length: 80 }, (_, i) => `Caption ${i} ${"x".repeat(100)}`);
+  const { state, questions } = lobbyQuestion({ url: "https://x.example/", title: "Best Casinos 2026", text: "a".repeat(5000), captions });
+  assert.equal(state.page.url, "https://x.example/");
+  assert.equal(state.page.title, "Best Casinos 2026");
+  assert.equal(state.page.text.length, 3000);
+  assert.equal(state.page.captions.length, 60);
+  assert.ok(state.page.captions.every((c) => c.length <= 60));
+  assert.deepEqual(Object.keys(questions), ["kind"]);
+  assert.equal(questions.kind.type, "choice");
+  assert.deepEqual(Object.keys(questions.kind.criteria), ["gambling_site", "geo_or_regulatory_notice", "closed_or_suspended", "parked_or_for_sale", "not_gambling_site", "error_or_bot_wall"]);
+});
+
+test("lobbyVerdict: the top option at 0.8 with Noul 0.7 becomes a status; a gambling site, an unsure answer or no answer is null", () => {
+  const kind = (top, p, noul = 0.9) => ({ kind: { choice: top, noul, probabilities: { [top]: p, gambling_site: top === "gambling_site" ? p : 1 - p } } });
+  assert.equal(lobbyVerdict(kind("not_gambling_site", 0.92)), "not_casino");
+  assert.equal(lobbyVerdict(kind("geo_or_regulatory_notice", 0.85)), "geo_blocked");
+  assert.equal(lobbyVerdict(kind("closed_or_suspended", 0.8)), "closed");
+  assert.equal(lobbyVerdict(kind("parked_or_for_sale", 0.9)), "parked");
+  assert.equal(lobbyVerdict(kind("error_or_bot_wall", 0.9)), "blocked_http");
+  assert.equal(lobbyVerdict(kind("not_gambling_site", 0.7)), null, "probability below 0.8");
+  assert.equal(lobbyVerdict(kind("not_gambling_site", 0.92, 0.5)), null, "Noul below 0.7");
+  assert.equal(lobbyVerdict({ kind: { noul: 0.9, probabilities: { not_gambling_site: 0.92 } } }), "not_casino");
+  assert.equal(lobbyVerdict({ kind: { probabilities: { not_gambling_site: 0.92 } } }), null, "no Noul never passes");
+  assert.equal(lobbyVerdict(kind("gambling_site", 0.95)), null);
+  assert.equal(lobbyVerdict({ kind: { noul: 0.9, probabilities: { somewhere_else: 0.99 } } }), null, "an unknown option");
+  assert.equal(lobbyVerdict(null), null);
+  assert.equal(lobbyVerdict({}), null);
+  assert.equal(lobbySummary(kind("not_gambling_site", 0.92)), "lobby:not_gambling_site:0.92");
+  assert.equal(lobbySummary(null), "off");
 });

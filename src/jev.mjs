@@ -139,3 +139,49 @@ export function termsPageQuestion({ url, title, headings, text }) {
 
 export const acceptsPage = (answers) => !!answers && !!answers.is_terms && answers.is_terms.noul >= PAGE_NOUL_MIN;
 export const pageSummary = (answers) => answers ? `page:${fmt(answers.is_terms?.noul)}` : "off";
+
+export const LOBBY_P_MIN = 0.8; // the top lobby option must be this likely ...
+export const LOBBY_NOUL_MIN = 0.7; // ... and the question itself this certain, before a lobby is given a status
+// option -> the status it gives; `gambling_site` gives none
+const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
+
+/**
+ * The lobby judgment, asked when the lobby offers no terms link or clickable: what is this page. `captions` are the
+ * footer's link texts and the clickable texts. Affiliate and review sites, blogs and templates answer here what no
+ * pattern could say.
+ */
+export function lobbyQuestion({ url, title, text, captions }) {
+  return {
+    state: { page: { url: clip(url, 200), title: clip(title, 120), text: (text || "").slice(0, 3000), captions: (captions || []).slice(0, MAX_ENTRIES).map((c) => clip(c, 60)) } },
+    questions: {
+      kind: {
+        type: "choice",
+        instructions: "What is `page`?",
+        criteria: {
+          gambling_site: "an online casino, sportsbook, poker, bingo or lottery operator's own site, whatever its language",
+          geo_or_regulatory_notice: "a notice that the service is not offered in the visitor's country or region, or is blocked by a regulator",
+          closed_or_suspended: "a notice that the site has closed, ceased operating or been suspended",
+          parked_or_for_sale: "a parked domain or a domain for sale",
+          not_gambling_site: "an affiliate, review, comparison or news site, a blog, a template or placeholder page, or a software vendor's page, not an operator's own site",
+          error_or_bot_wall: "an error page, an access-denied page or a bot or human-verification wall",
+        },
+      },
+    },
+  };
+}
+
+/** The status a confident lobby answer gives: "geo_blocked", "closed", "parked", "not_casino", "blocked_http"; null for a gambling site, an unsure answer or none. */
+export function lobbyVerdict(answers) {
+  const a = answers?.kind;
+  if (!a || !(a.noul >= LOBBY_NOUL_MIN) || !a.probabilities || typeof a.probabilities !== "object") return null;
+  const [top, p] = Object.entries(a.probabilities).sort((x, y) => y[1] - x[1])[0] || [];
+  return p >= LOBBY_P_MIN && Object.hasOwn(LOBBY_STATUS, top) ? LOBBY_STATUS[top] : null;
+}
+
+/** The `jev` column's note for a lobby answer: `lobby:<option>:<p>`. */
+export const lobbySummary = (answers) => {
+  const probs = answers?.kind?.probabilities;
+  if (!answers || !probs || typeof probs !== "object") return "off";
+  const [top, p] = Object.entries(probs).sort((x, y) => y[1] - x[1])[0] || [];
+  return top ? `lobby:${top}:${fmt(p)}` : "off";
+};

@@ -3,7 +3,7 @@
 import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
-import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
+import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -25,9 +25,9 @@ export const BLOCK_TEXT = new RegExp([
 // page opens with them, while a lobby's footer disclaimer ("some promotions are not offered in your country") sits at the end.
 export const BLOCK_TEXT_HEAD = /(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)|residing in your (country|location|jurisdiction)/i;
 // A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian,
-// Spanish. The subject is the site, never a bonus or an account: "no longer available" needs site/casino/service/we before it
+// Spanish. The subject is the site, never a bonus or an account: "no longer available" needs "this/our/the site|casino|service..." right before it
 // (or a domain-name headline), and "geschlossen" needs "dauerhaft/endgültig" or the site as its subject.
-export const CLOSED_TEXT = /\bclosed for business\b|\b(site|website|casino|platform|service|services|domain|operations?|we)\b[^.\n]{0,30}\bno longer (available|operating|accepting|in operation)\b|^\s*[\w-]{2,60}\.[a-z]{2,}\s+no longer available\b|\b(site|website|casino|platform) (is|has) (been )?(closed|discontinued)\b|\bceased (operations|trading)\b|\bpermanently closed\b|\bcessé ses activités\b|\b(dauerhaft|endgültig) geschlossen\b|\b(seite|website|casino|plattform) (ist|wurde) (\w+ )?geschlossen\b|\bchiuso definitivamente\b|\bcerrado permanentemente\b/i;
+export const CLOSED_TEXT = /\bclosed for business\b|\b(this|our|the) (site|website|casino|platform|service|domain|operations?) ((is|are|has|have) )?no longer (available|operating|accepting|in operation)\b|^\s*[\w-]{2,60}\.[a-z]{2,}\s+no longer available\b|\b(site|website|casino|platform) (is|has) (been )?(closed|discontinued)\b|\bceased (operations|trading)\b|\bpermanently closed\b|\bcessé ses activités\b|\b(dauerhaft|endgültig) geschlossen\b|\b(seite|website|casino|plattform) (ist|wurde) (\w+ )?geschlossen\b|\bchiuso definitivamente\b|\bcerrado permanentemente\b/i;
 // An edge or WAF refusal page: Akamai "Access Denied / Reference #18.x", Incapsula "Incident ID", edgesuite, Slovak/Czech "request denied".
 export const WAF_TEXT = /access (is )?denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
 // A domain marketplace's host: whatever it serves (even its own error page) the domain is for sale.
@@ -406,6 +406,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const ask = jev.ask || askJev;
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
+  const lobbyTitle = await page.title().catch(() => "");
   // Is this the lobby again? An app routes an unknown path (a guessed one, an invented /en/ variant) to its shell.
   const lobbyRef = { len: lobbyText.length, fp: fingerprint(lobbyText) };
   // What the lobby hides (an SEO block, a collapsed footer): a guessed path that serves the lobby shell offers it as
@@ -735,6 +736,18 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // Last, the links that scored as a promotion's terms: one may still be the general terms, so each goes through the
   // same terms check (a VIP level page is not the terms: starzbet.com).
   for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c); if (r) return { ...r, via: "promo-terms" }; }
-  if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
-  return { href: "", text: "", via: "", tried };
+  if (!cands.length && !lobby.clickables.length) {
+    tried.unshift("no terms link or text on the lobby");
+    // Nothing to open: Jev says what this page is (an affiliate site, a notice in a language the patterns miss).
+    if (jevEnabled() && !jevDown) {
+      try {
+        const captions = [...lobby.links.filter((l) => l.footer).map((l) => l.text), ...lobby.clickables.map((c) => c.text)].filter(Boolean).slice(0, MAX_ENTRIES).map((t) => clip(t, 60));
+        const q = lobbyQuestion({ url: lobby.url, title: lobbyTitle, text: lobbyText, captions });
+        const answers = await ask(q.state, q.questions);
+        note(lobbySummary(answers));
+        return { href: "", text: "", via: "", tried, lobbyClass: lobbyVerdict(answers) };
+      } catch (e) { failed(e); }
+    }
+  }
+  return { href: "", text: "", via: "", tried, lobbyClass: null };
 }

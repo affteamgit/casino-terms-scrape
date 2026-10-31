@@ -211,7 +211,8 @@ async function attempt(job, url, country, type) {
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
+    // Jev says the lobby is not a casino's (or a notice, a closed or parked site): that is the status, with no terms.
+    return { ...base, status: terms.lobbyClass || base.status, ...(terms.lobbyClass && { error: `Jev: the lobby is ${terms.lobbyClass}` }), finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
   } finally { live.remove(job.id, browser); await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
