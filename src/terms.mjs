@@ -1,8 +1,9 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, isDoc, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, otherDocs, FILE_HOST, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isDoc, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, otherDocs, FILE_HOST, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
+import { docxText } from "./docx.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, exclusionQuestion, acceptsPage, acceptsBorderline, pageSummary, PAGE_NOUL_BORDER, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -77,7 +78,7 @@ export async function bodyText(page) {
 /**
  * A document shown in an iframe (a modal's frame, a page whose body is a frame): the longest frame text of `minChars`
  * or more that passes `want`, with the frame's URL ("" for about:blank or srcdoc), or null. Playwright evaluates in
- * cross-origin frames too. A PDF's frame is tryPdf's, and a frame that does not answer in 3 s is skipped.
+ * cross-origin frames too. A PDF's frame is tryFile's, and a frame that does not answer in 3 s is skipped.
  */
 export async function frameText(page, want, minChars = 1500) {
   let best = null;
@@ -553,11 +554,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const judging = (c, fast = true, d = {}) => (c.lowScore || c.elsewhere || (d.frame && !ownUrl(d.frameUrl || "")) ? elsewhere : { fast, jevOnly: jevOnly(c) });
   const pageMeta = (p = page) => p.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: p.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
-  // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read
-  // in Node. When the page may not read them (a file host without CORS headers, for one), page.request fetches them
+  // A file document's bytes (a PDF or a DOCX) are fetched inside the page, so they travel the session's route (its proxy,
+  // its cookies), and read in Node. When the page may not read them (a file host without CORS headers, for one), page.request fetches them
   // instead: it shares the session's cookies but not its proxy, and leaves from this process (the VPN locally, the
   // Actions runner on Browserless), which the file hosts allow. Either way a file over 20 MB is not read.
-  const pdfBytes = async (url) => {
+  const fileBytes = async (url) => {
     try {
       const b64 = await page.evaluate(async ({ u, max }) => {
         const r = await fetch(u, { signal: AbortSignal.timeout(30000) });
@@ -579,15 +580,21 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (body.length > MAX_PDF) throw new Error("over 20 MB");
     return body;
   };
+  // A file document, read by its first bytes ("%PDF" or a ZIP's "PK\x03\x04"), else by its extension: pdf.js for a PDF,
+  // docx.mjs for a Word file; judged like a page. The result says which (`pdf: true` or `docx: true`).
   // A document a hop took from a page (`c.from`) on another site than the casino's, served from that site, is Jev's alone.
-  const tryPdf = async (c) => {
+  const tryFile = async (c) => {
+    let kind = /\.docx(\?|#|$)/i.test(c.href) ? "docx" : "pdf";
     try {
-      const text = await pdfText(await pdfBytes(c.href));
+      const bytes = await fileBytes(c.href);
+      if (bytes.subarray(0, 4).toString("latin1") === "%PDF") kind = "pdf";
+      else if (bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50) kind = "docx";
+      const text = kind === "docx" ? docxText(bytes) : await pdfText(bytes);
       const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, c.from && !ownUrl(c.href, c.from) ? elsewhere : judging(c));
-      dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
-      if (good) return { href: c.href, text, via: "link", pdf: true, tried };
-      tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
-    } catch (e) { tried.push(`${c.href} (pdf unreadable: ${clip(e.message, 50)})`); }
+      dbg(kind, c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
+      if (good) return { href: c.href, text, via: "link", [kind]: true, tried };
+      tried.push(`${c.href} (${kind} ${text.length < 500 ? "thin" : "not terms-like"})`);
+    } catch (e) { tried.push(`${c.href} (${kind} unreadable: ${clip(e.message, 50)})`); }
     return null;
   };
   // A thin terms page that only offers its document ("use the link below to view or download the Terms of Use"):
@@ -618,7 +625,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // own-domain page named as the general terms is read too, and the longer document is kept.
   // Before that, its collapsed sections are opened: jasino.com's terms passed on their section titles alone (2,246 chars).
   const fuller = async (r) => {
-    if (hopping || r.pdf || r.text.length >= 5000) return r;
+    if (hopping || r.pdf || r.docx || r.text.length >= 5000) return r;
     if (await expandSections(page)) {
       const d = await readDoc(page, 10000, readsLikeTerms);
       dbg("fuller expanded", page.url(), r.text.length, "->", d.text.length, "chars");
@@ -652,14 +659,14 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const besidePromo = (u) => { for (const g of promoSiblingGuesses(u)) if (!promoGuesses.includes(g)) promoGuesses.push(g); };
   const tryLink = async (c) => {
     visited.add(c.href);
-    if (isPdf(c.href)) return tryPdf(c);
+    if (isDoc(c.href)) return tryFile(c);
     let resp;
     try { resp = await page.goto(c.href, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch (e) {
-      // A PDF served without a .pdf extension makes Chromium start a download instead of rendering.
-      if (/Download is starting/i.test(e.message)) return tryPdf(c);
+      // A PDF served without a .pdf extension (or any other file) makes Chromium start a download instead of rendering.
+      if (/Download is starting/i.test(e.message)) return tryFile(c);
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
-    if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() });
+    if (/application\/pdf|officedocument\.wordprocessingml/i.test((resp && resp.headers()["content-type"]) || "")) return tryFile({ ...c, href: page.url() });
     // The invented /en/ variant is read without `want`: isLobby rejects a shell below anyway, so waiting on it gains nothing.
     let d = await readDoc(page, c.english ? 15000 : 35000, c.english ? readsLikeTerms : want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
@@ -705,12 +712,12 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   };
   // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
   // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile. A tab whose URL is a
-  // PDF is tryPdf's. The tab is read with `want`, so a tab that shows the lobby's chrome first is read once its document
+  // PDF or a DOCX is tryFile's. The tab is read with `want`, so a tab that shows the lobby's chrome first is read once its document
   // arrives, and a tab that is only the shell is not the terms. A tab on another site (or a frame in it) is Jev's alone.
   const readPopup = async (np, target, at, hub) => {
     try {
       await np.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
-      if (isPdf(np.url())) { const r = await tryPdf({ ...target, href: np.url(), elsewhere: !ownUrl(np.url()) }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
+      if (isDoc(np.url())) { const r = await tryFile({ ...target, href: np.url(), elsewhere: !ownUrl(np.url()) }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
       const d = await readDoc(np, 35000, want), url = np.url();
       dbg("click", target.text, "opened a tab", url, d.text.length, "chars");
       const where = `click "${target.text}"${hub ? ` on ${at}` : ""} → ${url}`;

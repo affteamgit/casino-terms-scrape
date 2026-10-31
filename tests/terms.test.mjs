@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { docx } from "./docx-fixture.mjs";
 import { chromium } from "playwright-core";
 import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor } from "../src/terms.mjs";
 
@@ -1433,6 +1434,30 @@ test("a PDF that a page on another site links is Jev's alone", async () => {
       const yes = await search((p) => /\.pdf$/.test(p.url));
       assert.equal(yes.pdf, true, yes.tried.join(" | "));
       assert.equal(yes.href, "https://partner.test/docs/terms.pdf");
+    } finally { await browser.close(); }
+  });
+});
+
+// ecasino.cz publishes its general terms ("Všeobecné obchodní podmínky") only as a .docx.
+test("a footer terms link to a .docx: the Word document is read and stored as the terms", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const file = docx(["General Terms and Conditions", ...Array.from({ length: 10 }, (_, i) => `${i + 1}. ${GENERAL(i)}`)]);
+      await page.route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/") return r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="/files/terms.docx">Terms and Conditions</a>`) });
+        if (p === "/files/terms.docx") return r.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", body: file });
+        return r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.docx, true, r.tried.join(" | "));
+      assert.equal(r.pdf, undefined);
+      assert.equal(r.href, "https://casino.test/files/terms.docx");
+      assert.ok(r.text.length >= 3000, `${r.text.length} chars`);
+      assert.match(r.text, /^General Terms and Conditions\n1\. These terms and conditions govern/);
     } finally { await browser.close(); }
   });
 });
