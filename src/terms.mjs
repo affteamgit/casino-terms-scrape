@@ -437,6 +437,37 @@ export function helpLinks(links, pageUrl) {
   return out;
 }
 
+// A sign-up control's caption, at most 40 characters: not a login, an affiliate programme or a terms caption
+// ("Registration terms").
+const SIGNUP_CONTROL = String.raw`\b(sign[\s-]?up|register|join( now)?|create (an )?account|registration)\b`, SIGNUP_SKIP = String.raw`log\s?in|sign\s?in|affiliate|terms|conditions`;
+/**
+ * Runs inside the page: marks the sign-up control that opens something on the page itself (a modal) with data-csu and
+ * returns its caption, or "". A button, a role=button, an element with an onclick or a button-like class, or a link
+ * that goes nowhere by itself (no href, "", "#...", javascript:, or this page again: a hash route or a query); a link to
+ * another page is the signup-page step's. A visible one first.
+ */
+export function findSignupInPage(re, skip) {
+  const r = new RegExp(re, "i"), s = new RegExp(skip, "i"), here = (u) => u.origin + u.pathname.replace(/\/$/, "");
+  for (const el of document.querySelectorAll("[data-csu]")) el.removeAttribute("data-csu");
+  const caption = (el) => (el.innerText || el.value || "").trim().replace(/\s+/g, " ");
+  const router = (a) => { const h = (a.getAttribute("href") || "").trim(); if (h === "" || h.startsWith("#") || /^javascript:/i.test(h)) return true; try { return here(new URL(a.href)) === here(location); } catch { return false; } };
+  const els = [...document.querySelectorAll("a, button, [role=button], [onclick], input[type=button], input[type=submit], [class*=btn i], [class*=button i]")].filter((el) => {
+    const t = caption(el), a = el.closest("a[href]");
+    return t && t.length <= 40 && r.test(t) && !s.test(t) && (!a || router(a));
+  });
+  const el = els.find((x) => x.getClientRects().length) || els[0];
+  if (!el) return "";
+  el.setAttribute("data-csu", "1");
+  return caption(el);
+}
+/** Runs inside the page: the links and the marked clickables (readLobby's data-cts) inside a dialog, a modal or a popup. */
+export function modalPartsInPage() {
+  const SEL = "[role=dialog], .modal, [class*=modal i], [class*=popup i], [class*=register i], [class*=signup i]";
+  // <body class="modal-open"> is not a modal.
+  const inside = (el) => { for (let c = el.closest(SEL); c; c = c.parentElement && c.parentElement.closest(SEL)) if (c !== document.body && c !== document.documentElement) return true; return false; };
+  return { hrefs: [...document.querySelectorAll("a[href]")].filter(inside).map((a) => a.href), sels: [...document.querySelectorAll("[data-cts]")].filter(inside).map((el) => `[data-cts="${el.getAttribute("data-cts")}"]`) };
+}
+
 /**
  * The guess phase's URLs in order: the sitemap's terms URLs, the general terms next to a rejected promotion's or
  * product's page (`promoGuesses`), the sibling guesses, then the common paths.
@@ -455,7 +486,7 @@ export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", .
 /**
  * Opens the casino's terms, in this order: Jev's picks, then anchors that score as the general terms (up to three
  * besides the picks); for apps whose footer routes from plain elements, a click on the element that reads like the
- * terms link; the registration page's terms link; the terms links of the lobby's help or support pages; the sitemap
+ * terms link; the registration page's terms link, or the registration modal's; the terms links of the lobby's help or support pages; the sitemap
  * and the paths casinos commonly use; and last, anchors
  * that scored 0 or less (a promotion's terms, mostly), judged by Jev alone while it is up. Returns the page's text
  * and URL, and what was tried.
@@ -469,6 +500,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // The lobby's own text, kept to tell it from a guessed path that only serves the lobby shell (the page is somewhere else by then).
   const lobbyText = (await bodyText(page).catch(() => "")) || "";
   const lobbyTitle = await page.title().catch(() => "");
+  // The lobby's sign-up control that opens something in place (a registration modal), seen while the page is the lobby.
+  const signupControl = await page.evaluate(`(${findSignupInPage})(${JSON.stringify(SIGNUP_CONTROL)}, ${JSON.stringify(SIGNUP_SKIP)})`).catch(() => "");
   // Is this the lobby again? An app routes an unknown path (a guessed one, an invented /en/ variant) to its shell.
   const lobbyRef = { len: lobbyText.length, fp: fingerprint(lobbyText) };
   // What the lobby hides (an SEO block, a collapsed footer): a guessed path that serves the lobby shell offers it as
@@ -855,21 +888,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (navigated) { const r = await hopFrom(d); if (r) return r; }
     } catch (e) { tried.push(`click "${c.text}" (${clip(e.message, 60)})`); }
   }
-  // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
-  // terms): scan it, read-only, when the lobby gave nothing.
-  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && withinDomain(host(l.href), registrable(host(lobby.url))) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
-  if (signup) {
-    try {
-      await page.goto(signup.href, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await settle(page);
-      const sub = await readLobby(page);
-      const subCands = termsCandidates(sub.links, lobby.url).filter((c) => c.score > 0).slice(0, 2);
-      dbg("signup page", signup.href, "candidates:", subCands.map((c) => `${c.score} ${c.href}`).join(" | "));
-      for (const c of subCands) { const r = await tryLink(c); if (r) return { ...r, via: "signup-page" }; }
-      if (!subCands.length) tried.push(`signup page ${signup.href} (no terms link)`);
-    } catch (e) { tried.push(`signup page ${signup.href} (${clip(e.message, 60)})`); }
-  }
-  // The links of another of the casino's own pages (its help page), judged like the lobby's: a link that scores as the
+  // The links of another of the casino's own pages (its help page, its sign-up modal), judged like the lobby's: a link that scores as the
   // general terms (up to two) may be accepted on the pattern; Jev's picks, asked while Jev is up, go first, and one the
   // heuristic scores 0 or less is Jev's alone (jevOnly). A document the page links (docLinks; `from`: the page) is scored
   // on its own caption and name whatever host serves it, since the page vouches for it; scored 0 or less it is Jev's
@@ -906,6 +925,75 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     }
     return null;
   };
+  // The registration page always links the terms a player must accept (PlayGrand's lobby links only promotions'
+  // terms): scan it, read-only, when the lobby gave nothing. `go`: false when a click already took the page there.
+  const signupPage = async (href, go = true) => {
+    try {
+      if (go) await page.goto(href, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await settle(page);
+      const sub = await readLobby(page);
+      const subCands = termsCandidates(sub.links, lobby.url).filter((c) => c.score > 0).slice(0, 2);
+      dbg("signup page", href, "candidates:", subCands.map((c) => `${c.score} ${c.href}`).join(" | "));
+      for (const c of subCands) { const r = await tryLink(c); if (r) return { ...r, via: "signup-page" }; }
+      if (!subCands.length) tried.push(`signup page ${href} (no terms link)`);
+    } catch (e) { tried.push(`signup page ${href} (${clip(e.message, 60)})`); }
+    return null;
+  };
+  // A sign-up link that goes nowhere by itself (`#`, `javascript:`, empty, the lobby again: a hash route), or a sign-up
+  // button where the lobby has no sign-up link, opens a registration modal (goluckycasino.com, betjoycasino.com's
+  // #registerPopup), and the modal links the terms a player accepts. Back on the lobby the control is clicked by script
+  // (findSignupInPage), the DOM is given up to 8 s to grow, and the whole page is read again with the short read: the
+  // links and clickables the click added, and any inside a dialog, modal or popup (modalPartsInPage), are the modal's.
+  // Its candidates are opened (ownPageCands), else its terms clickable is clicked (clickOpen, the modal opened again
+  // first when a candidate's page replaced it). A click that went to another page is a registration page: signupPage.
+  // Two minutes at most.
+  const signupModal = async () => {
+    const until = Date.now() + 120000, short = { quietMs: 3000, maxMs: 10000 };
+    const open = async () => {
+      if (page.url() !== lobby.url) { await page.goto(lobby.url, { waitUntil: "domcontentloaded", timeout: 45000 }); await settle(page); }
+      const text = await page.evaluate(`(${findSignupInPage})(${JSON.stringify(SIGNUP_CONTROL)}, ${JSON.stringify(SIGNUP_SKIP)})`).catch(() => "");
+      if (!text) return { text: signupControl, gone: true };
+      const at = page.url(), size = () => page.evaluate(() => ({ n: document.getElementsByTagName("*").length, len: document.body ? document.body.innerText.length : 0 })).catch(() => ({ n: 0, len: 0 }));
+      const moved = () => { try { const x = new URL(page.url()), y = new URL(at); return x.origin !== y.origin || x.pathname.replace(/\/$/, "") !== y.pathname.replace(/\/$/, ""); } catch { return page.url() !== at; } };
+      const s0 = await size();
+      await page.evaluate(() => { const el = document.querySelector("[data-csu]"); el.scrollIntoView({ block: "center" }); el.click(); });
+      let grew = false;
+      for (let i = 0; i < 16 && !grew; i++) { await sleep(500); const s1 = await size(); grew = moved() || s1.n > s0.n || s1.len > s0.len + 50; }
+      if (moved()) return { text, navigated: true };
+      if (!grew) return { text };
+      const sub = await readLobby(page, short);
+      const m = await page.evaluate(modalPartsInPage).catch(() => ({ hrefs: [], sels: [] }));
+      const hrefs = new Set(lobby.links.map((l) => l.href)), captions = new Set(lobby.clickables.map((c) => c.text));
+      return { text, at, grew, sub, links: sub.links.filter((l) => !hrefs.has(l.href) || m.hrefs.includes(l.href)), clicks: sub.clickables.filter((c) => !captions.has(c.text) || m.sels.includes(c.sel)) };
+    };
+    try {
+      const o = await open();
+      if (o.gone) { tried.push(`signup modal "${o.text}" (gone)`); return null; }
+      if (o.navigated) return signupPage(page.url(), false);
+      if (!o.grew) { tried.push(`signup modal "${o.text}" (nothing opened)`); return null; }
+      const { cands: mc, texts } = await ownPageCands({ ...o.sub, clickables: o.clicks }, o.links, o.at);
+      const clicks = [...o.clicks.filter((c) => texts.includes(c.text)), ...o.clicks.filter((c) => !texts.includes(c.text))];
+      dbg("signup modal", `"${o.text}"`, "candidates:", mc.map((c) => `${c.score} ${c.href}`).join(" | "), "clickables:", clicks.map((c) => `"${c.text}"`).join(" | "));
+      if (!mc.length && !clicks.length) { tried.push(`signup modal "${o.text}" (no terms link)`); return null; }
+      const r = await tryOwnPage(mc, "signup-modal", until);
+      if (r) return r;
+      let click = clicks[0];
+      if (!click || Date.now() > until) return null;
+      if (page.url() !== o.at) {
+        const again = await open();
+        click = again.grew ? again.clicks.find((x) => x.text === click.text) : null;
+        if (!click) { tried.push(`signup modal "${o.text}" (did not open again)`); return null; }
+      }
+      const c = await clickOpen(click, o.at);
+      if (c.r) return { ...c.r, via: "signup-modal" };
+      if (c.navigated) { const h = await hopFrom(c.d); if (h) return { ...h, via: "signup-modal" }; }
+    } catch (e) { tried.push(`signup modal "${signupControl}" (${clip(e.message, 60)})`); }
+    return null;
+  };
+  const bareUrl = (u) => u.replace(/#.*$/, "").replace(/\/$/, "");
+  const signup = lobby.links.find((l) => /^https?:/.test(l.href) && withinDomain(host(l.href), registrable(host(lobby.url))) && bareUrl(l.href) !== bareUrl(lobby.url) && /sign.?up|register|join|create.?account|registration/i.test(l.text + " " + new URL(l.href).pathname) && !/login|sign.?in|affiliate/i.test(l.text + " " + new URL(l.href).pathname));
+  if (signup) { const r = await signupPage(signup.href); if (r) return r; }
+  else if (signupControl) { const r = await signupModal(); if (r) return r; }
   // A lobby with no terms link may hang its legal pages off its help, support or FAQ page (goluckycasino.com's /support):
   // up to two of its own such pages (helpLinks), not opened yet, are read like the lobby with the short read (readLobby
   // dismisses a cookie banner first). Their candidates are opened (ownPageCands), else their first terms clickable is

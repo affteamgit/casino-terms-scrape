@@ -1560,3 +1560,34 @@ test("a lobby with no terms link: the terms linked from its support page are fou
     } finally { await browser.close(); }
   });
 });
+
+// goluckycasino.com, betjoycasino.com (#registerPopup): "Sign up" is a `#` link or a button that opens a registration
+// modal, and only the modal links the terms ("I accept the Terms & Conditions"). `control`: the sign-up link or button
+// (it calls openReg()); `accept`: the HTML of the terms acceptance inside the modal.
+const SIGNUP_LOBBY = (control, accept) => LOBBY(`<a href="/privacy">Privacy Policy</a>`, `${control}<script>function openReg() { setTimeout(() => document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(`<div class="modal" role="dialog" id="registerPopup"><h2>Create your account</h2><form><input name="email"><input type="password" name="pw"><input name="nick"><label><input type="checkbox"> I accept the ${accept}</label><div id="tc"></div><button type="button">Register</button></form></div>`)}), 300); }
+function showTerms() { document.getElementById("tc").innerHTML = ${JSON.stringify(`<h2>Terms and Conditions</h2>${GENERALS(8)}`)}; }</script>`);
+test("a sign-up link or button that opens a modal: the modal's terms link is found, and so is its in-place terms (via signup-modal); a button that goes to a registration page reads that page", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const search = async (pages) => {
+        await page.unrouteAll();
+        await site(page, { "/terms.html": TERMS_PAGE(), ...pages });
+        await page.goto("https://casino.test/");
+        return fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      };
+      const link = await search({ "/": SIGNUP_LOBBY(`<a href="#" onclick="openReg(); return false">Sign up</a>`, `<a href="/terms.html">Terms &amp; Conditions</a>`) });
+      assert.equal(link.href, "https://casino.test/terms.html", link.tried.join(" | "));
+      assert.equal(link.via, "signup-modal");
+      assert.ok(!link.tried.some((t) => t.startsWith("signup page")), link.tried.join(" | "));
+      const inPlace = await search({ "/": SIGNUP_LOBBY(`<button class="btn" onclick="openReg()">Register now</button>`, `<span class="tc-link" onclick="showTerms()">Terms &amp; Conditions</span>`) });
+      assert.equal(inPlace.via, "signup-modal", inPlace.tried.join(" | "));
+      assert.match(inPlace.text, /^Terms and Conditions\n/);
+      assert.ok(inPlace.text.length >= 3000, `${inPlace.text.length} chars`);
+      const away = await search({ "/": LOBBY(`<a href="/privacy">Privacy Policy</a>`, `<button onclick="location.href = '/account/new'">Join now</button>`), "/account/new": SUPPORT_PAGE(`<p>I accept the <a href="/terms.html">Terms and Conditions</a></p>`) });
+      assert.equal(away.href, "https://casino.test/terms.html", away.tried.join(" | "));
+      assert.equal(away.via, "signup-page");
+    } finally { await browser.close(); }
+  });
+});

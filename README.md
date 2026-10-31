@@ -101,16 +101,18 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 4. Open the terms. Casinos always have them, so the search escalates until something is found: every anchor is
    scored (`src/links.mjs`) and up to three general-terms candidates are tried; where the footer routes from plain
    elements instead of anchors (Lebull) the element that reads like the terms link is clicked; the registration
-   page is scanned, since it always links the terms a player accepts (PlayGrand); up to two of the lobby's own help,
-   support, FAQ, legal, about, info or contact pages are read like the lobby (goluckycasino.com hangs its legal pages
-   off `/support`), and the terms they link are tried (`via help-page`); the sitemap and the paths
-   casinos commonly use are opened in the browser (Rokubet), the general terms next to a rejected bonus page first
+   page is scanned, since it always links the terms a player accepts (PlayGrand), and a sign-up link or button that
+   opens a registration modal instead is clicked and the modal's terms link or terms text tried (`via signup-modal`);
+   up to two of the lobby's own help, support, FAQ, legal, about, info or contact pages are read like the lobby
+   (goluckycasino.com hangs its legal pages off `/support`), and the terms they link are tried (`via help-page`); the
+   sitemap and the paths casinos commonly use are opened in the browser (Rokubet), the general terms next to a rejected bonus page first
    (`/en/terms/bonus/` -> `/en/terms/`); and only then a link scored as a promotion's terms is opened, which only Jev
    may accept, so it is skipped while Jev is off or down. A
    page that only asks for a country (unibet.com) is followed to the brand's regional site first. A document counts
    only once its text has stopped growing, is not a bot wall or a font placeholder, and reads like terms (a
-   help-centre home page does not). The `pages` column says how the terms were reached
-   (`via click`, `via signup-page`, `via help-page`, `via guess`, `via low-score link`), and `terms_tried` what failed. A lobby reached
+   help-centre home page does not). The `pages` column says how the terms were reached (`via click`,
+   `via signup-page`, `via signup-modal`, `via help-page`, `via guess`, `via low-score link`), and `terms_tried` what
+   failed. A lobby reached
    without its terms (a bot wall on the terms page through that exit) is kept only as a fallback while the other
    exit countries are tried. Jev is shown the footer's links and clickable texts and asked which is the general terms;
    when it is confident one exists its pick is tried first (`via jev`). A page the terms pattern rejects is judged by
