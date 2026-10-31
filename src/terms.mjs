@@ -14,7 +14,7 @@ export const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
 // English "not offered ... your location" (888), "residing in your country", "unavailable in your location" (Mr Green);
 // Portuguese government block page, Russian "location restriction", Spanish, German, French, Italian and Turkish forms.
 export const BLOCK_TEXT = new RegExp([
-  "not (available|accessible) (in|from) your (country|region|location)", "access (is )?(denied|restricted)", "restricted (country|region|territor)",
+  "not (available|accessible) (in|from) your (country|region|location)", "access (is )?restricted", "restricted (country|region|territor)",
   "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
   "403 forbidden", "error 1020", "sorry, you have been blocked",
   "(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)", "residing in your (country|location|jurisdiction)",
@@ -25,7 +25,7 @@ export const BLOCK_TEXT = new RegExp([
 // A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian, Spanish.
 export const CLOSED_TEXT = /closed for business|no longer (available|operating|accepting|in operation)|has (been )?(closed|discontinued)|ceased (operations|trading)|permanently closed|site (is|has) closed|cessé ses activités|geschlossen|chiuso definitivamente|cerrado permanentemente/i;
 // An edge or WAF refusal page: Akamai "Access Denied / Reference #18.x", Incapsula "Incident ID", edgesuite, Slovak/Czech "request denied".
-export const WAF_TEXT = /access denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
+export const WAF_TEXT = /access (is )?denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
 // A domain marketplace's host: whatever it serves (even its own error page) the domain is for sale.
 export const MARKETPLACE_HOSTS = /(^|\.)(forsale\.godaddy\.com|sedo\.com|dan\.com|afternic\.com|hugedomains\.com|parkingcrew\.net)$/i;
 // A short page that says the site is down for maintenance (thestakehouse.io): the casino is not reached this time.

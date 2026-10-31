@@ -302,6 +302,9 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   // an Akamai-style refusal in Slovak: "URL ... zamietnutá", with a support ID
   assert.equal(st("Požadovaná URL adresa bola zamietnutá. Kontaktujte prosím IT podporu. Vaše ID pre podporu je: <678628845435775204>"), "blocked_http");
   assert.equal(st("The request was blocked. Incident ID: 1234-5678" + pad), "blocked_http", "Incapsula-style");
+  // an Akamai refusal on the casino's own host is a WAF block, not a geo notice
+  assert.equal(st("Access Denied You don't have permission to access \"http://casino.example/\" on this server. Reference #18.abc", 403), "blocked_http");
+  assert.equal(st("Access is denied. Reference #18.abc", 200), "blocked_http");
   // a marketplace's own error page is still a parked domain
   assert.equal(st("Access Denied You don't have permission to access \"http://forsale.godaddy.com/forsale/x.com?\" on this server. Reference #18.b48e655f", 403, "https://forsale.godaddy.com/forsale/x.com"), "parked");
   assert.equal(st("Access Denied", 200, "https://www.hugedomains.com/domain_profile.cfm?d=x"), "parked");
