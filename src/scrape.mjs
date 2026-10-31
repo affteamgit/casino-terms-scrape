@@ -10,10 +10,10 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
-import { host, termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { host, termsCandidates, regionalSites } from "./links.mjs";
 import { exitLookup } from "./exit.mjs";
 import { sessions, withBudget } from "./budget.mjs";
-import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
+import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino, otherDocsFor } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -204,7 +204,7 @@ async function attempt(job, url, country, type) {
     const jev = { notes: [] };
     const terms = await fetchTerms(page, lobby, jev, { unblock: meter.unblock });
     if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.frame ? " (frame)" : ""}${terms.pdf ? " (pdf)" : ""}`, text: terms.text.slice(0, 250000) });
-    for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
+    for (const p of otherDocsFor(lobby, terms)) {
       try {
         await page.goto(p.href, { waitUntil: "domcontentloaded", timeout: 45000 });
         const d = await readDoc(page);

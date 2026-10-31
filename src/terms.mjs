@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, otherDocs, FILE_HOST, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, exclusionQuestion, acceptsPage, acceptsBorderline, pageSummary, PAGE_NOUL_BORDER, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
@@ -421,6 +421,12 @@ export function namesProduct(l) {
 export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "", promoGuesses = [] }) =>
   [...sitemapTerms(sitemapLocs), ...promoGuesses, ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
 
+/**
+ * The payments and KYC pages to read after the terms search (otherDocs, skipping the terms page itself); none when Jev
+ * classified the lobby (`terms.lobbyClass`): a notice, a closed or parked site or a non-casino has no such pages.
+ */
+export const otherDocsFor = (lobby, terms) => (terms.lobbyClass ? [] : otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : []));
+
 const MAX_PDF = 20 * 1048576;
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
 /**
@@ -446,6 +452,28 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const lobbyHiddenText = (await page.evaluate(hiddenTextInPage).catch(() => "")) || "";
   const lobbyHidden = { len: lobbyHiddenText.length, fp: fingerprint(lobbyHiddenText) };
   const isLobby = (text) => !!lobbyText && (sameAsLobby(text, lobbyRef) || text.slice(0, 300) === lobbyText.slice(0, 300));
+  // A candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
+  // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
+  // The lobby's hidden text starts at its <main>, which often changes from one load to the next (a ticker, "N players
+  // online", shuffled tiles), so its opening alone does not recognise it: it is also the lobby's when it adds under
+  // 1,500 characters to the lobby's hidden text (coreText), is within 5% of its length, or adds text that does not read
+  // like terms (the lobby's hidden SEO words must not supply the terms words of a page that adds other copy). Not
+  // sameAsLobby: its same-first-500-characters rule makes every page's hidden text the lobby's on a site whose menu is a
+  // plain <div> (the hidden text keeps it: only header, nav and footer are stripped).
+  const hiddenShell = (t) => isShellOf(t, lobbyHidden, lobbyHiddenText) || coreText(t, lobbyHiddenText).length < 1500
+    || (lobbyHidden.len > 0 && (Math.abs(t.length - lobbyHidden.len) <= lobbyHidden.len * 0.05 || !readsLikeTerms(coreText(t, lobbyHiddenText))));
+  const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && hiddenShell(d.text));
+  // A snapshot that is still the lobby shell is not the document yet, even when the lobby's own words read like terms:
+  // the page may render its chrome first and the document seconds later (pokerstars), so a read goes on until its
+  // budget. The same `want` decides when readDoc falls back to the hidden text and to a frame's text, so the lobby's
+  // hidden text is not taken for the document either. Every document read uses it: a link's page, a tab a click opened,
+  // a page a click navigated to.
+  const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText) && !hiddenShell(t);
+  // A document on another site (a tab a click opened, a frame) is Jev's alone: the pattern accepts only the casino's own
+  // pages and its file hosts ("" is a frame with no URL of its own: about:blank, srcdoc).
+  const ownDomain = registrable(host(lobby.url));
+  const ownUrl = (u) => u === "" || withinDomain(host(u), ownDomain) || FILE_HOST.test(host(u));
+  const elsewhere = { fast: false, jevOnly: true };
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
   // The page read validates every candidate, so a wrong pick costs one page load; no key or an error changes nothing.
@@ -478,15 +506,15 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // Pages Jev has judged in this search, by URL: a candidate is judged once.
   const judged = new Map();
   // `fast: false` skips the pattern's fast accept, so only Jev can accept the text (and without Jev it is rejected).
-  // `jevOnly`: a link the heuristic does not rank as the general terms (see jevOnly below): Jev decides while it can be
-  // asked; with no key, or once a call has failed, the pattern decides as it always did.
+  // `jevOnly`: a link the heuristic does not rank as the general terms (see jevOnly below): Jev decides. With no key the
+  // pattern decides as it always did; with a key and Jev down (a call failed after askJev's retries, on this page or
+  // earlier) the candidate is skipped: an outage must not turn a product's terms into a pattern accept.
   // Jev reads the page's own text, what it adds beyond the lobby's header and footer, when that is 1,500 characters or
   // more: real terms under the lobby's menu came back 0.65-0.69, and 0.91 on their own text. A borderline answer
   // (PAGE_NOUL_BORDER up to PAGE_NOUL_MIN) asks the exclusion question about the same page too: the page is accepted
   // when Jev rules the exclusions out and the page reads like terms. Both answers are one judgment.
   const isTermsPage = async (text, meta, { fast = true, jevOnly = false } = {}) => {
-    const jevUp = jevEnabled() && !jevDown;
-    if (fast && (!jevOnly || !jevUp) && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
+    if (fast && (!jevOnly || !jevEnabled()) && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
     if (jevDown || text.length < 1500 || DOC_WALL.test(text.slice(0, 1500))) return false;
     // Keyed on the text's length too: an in-place click leaves the URL at the lobby's, and each opens a different document.
     const jk = `${meta.url}|${text.length}`;
@@ -506,7 +534,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       } catch (e) {
         // Jev failed on the exclusion question: it was asked because the page answer fell short, so the page is rejected.
         if (answers) { note(pageSummary(answers)); failed(e); return false; }
-        failed(e); return jevOnly && fast && readsLikeTerms(text); // Jev failed: the pattern decides
+        // Jev failed on the page: a page the pattern could accept was accepted above, so what is left is Jev's alone.
+        failed(e); return false;
       }
     })());
     return judged.get(jk);
@@ -518,7 +547,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const jevOnly = (c) => namesProduct(c) || (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
   // How a candidate's page is judged. A link of the last-resort pass (`lowScore`: scored 0 or less) is Jev's alone: the
   // pattern never accepts it, not even when Jev fails on it. `fast`: whether the pattern may accept a link it ranks.
-  const judging = (c, fast = true) => (c.lowScore ? { fast: false, jevOnly: true } : { fast, jevOnly: jevOnly(c) });
+  // A document read from a frame on another site (`d.frame`, `d.frameUrl`) is Jev's alone too (`elsewhere`).
+  const judging = (c, fast = true, d = {}) => (c.lowScore || c.elsewhere || (d.frame && !ownUrl(d.frameUrl || "")) ? elsewhere : { fast, jevOnly: jevOnly(c) });
   const pageMeta = (p = page) => p.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: p.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read
@@ -563,6 +593,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // document twice. `until` is the guess phase's deadline.
   let hopping = false, hopsLeft = 2;
   const hoppedDocs = new Set();
+  const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
   const hopFrom = async (d, until = Infinity) => {
     if (hopping || hopsLeft <= 0 || d.note === "wall" || Date.now() > until) return null;
     const from = page.url(), meta = await pageMeta();
@@ -611,7 +642,6 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     tried.push(`${c.href} again without the blocklist`);
     return tryLink(c);
   };
-  const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
   // The general terms next to a page rejected as a promotion's or a product's (/en/terms/bonus/ -> /en/terms/,
   // /help/bonus-terms-and-conditions -> /help/terms-and-conditions): guessed before the common paths.
   const promoGuesses = [];
@@ -626,22 +656,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() });
-    // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
-    // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
-    // The lobby's hidden text starts at its <main>, which often changes from one load to the next (a ticker, "N players
-    // online", shuffled tiles), so its opening alone does not recognise it: it is also the lobby's when it adds under
-    // 1,500 characters to the lobby's hidden text (coreText) or is within 5% of its length. Not sameAsLobby: its
-    // same-first-500-characters rule makes every page's hidden text the lobby's on a site whose menu is a plain <div>
-    // (the hidden text keeps it: only header, nav and footer are stripped).
-    const hiddenShell = (t) => isShellOf(t, lobbyHidden, lobbyHiddenText) || coreText(t, lobbyHiddenText).length < 1500
-      || (lobbyHidden.len > 0 && Math.abs(t.length - lobbyHidden.len) <= lobbyHidden.len * 0.05);
-    const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && hiddenShell(d.text));
-    // A snapshot that is still the lobby shell is not the document yet, even when the lobby's own words read like terms:
-    // the page may render its chrome first and the document seconds later (pokerstars), so the read goes on until the
-    // budget. The same `want` decides when readDoc falls back to the hidden text and to a frame's text, so the lobby's
-    // hidden text is not taken for the document either. The invented /en/ variant is read as before: isLobby rejects a
-    // shell below anyway, so waiting on it gains nothing.
-    const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText) && !hiddenShell(t);
+    // The invented /en/ variant is read without `want`: isLobby rejects a shell below anyway, so waiting on it gains nothing.
     let d = await readDoc(page, c.english ? 15000 : 35000, c.english ? readsLikeTerms : want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
@@ -652,7 +667,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
       // collapsed section and read again.
       if (!expanded && (!d.ok || !readsLikeTerms(d.text))) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
-      const good = d.ok && await isTermsPage(d.text, await pageMeta(), judging(c));
+      const good = d.ok && await isTermsPage(d.text, await pageMeta(), judging(c, true, d));
       dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
       if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, frame: !!d.frame, tried });
       tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
@@ -671,7 +686,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // when it is not the lobby's own and reads like terms, is judged as the terms.
     if (await expandSections(page)) { d = await readDoc(page, 10000, want); if (!shell(d)) return judge(d, true); }
     const h = await page.evaluate(hiddenTextInPage).catch(() => "");
-    if (h && !hiddenShell(h) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), judging(c, !jevOnly(c)))) {
+    // What h adds beyond the lobby's hidden text must read like terms on its own (hiddenShell says so too): the lobby's
+    // hidden SEO words cannot supply the terms words of a route that adds other copy.
+    if (h && !hiddenShell(h) && readsLikeTerms(h) && readsLikeTerms(coreText(h, lobbyHiddenText)) && await isTermsPage(h, await pageMeta(), judging(c, !jevOnly(c)))) {
       dbg("link", c.href, `ok ${h.length} hidden chars under the lobby shell`);
       return fuller({ href: page.url(), text: h, via: c.jev ? "jev" : "link", hidden: true, tried });
     }
@@ -684,15 +701,18 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   };
   // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
   // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile. A tab whose URL is a
-  // PDF is tryPdf's.
+  // PDF is tryPdf's. The tab is read with `want`, so a tab that shows the lobby's chrome first is read once its document
+  // arrives, and a tab that is only the shell is not the terms. A tab on another site (or a frame in it) is Jev's alone.
   const readPopup = async (np, target, at, hub) => {
     try {
-      await np.waitForLoadState("domcontentloaded").catch(() => {});
-      if (isPdf(np.url())) { const r = await tryPdf({ ...target, href: np.url() }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
-      const d = await readDoc(np, 35000, readsLikeTerms), url = np.url();
+      await np.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+      if (isPdf(np.url())) { const r = await tryPdf({ ...target, href: np.url(), elsewhere: !ownUrl(np.url()) }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
+      const d = await readDoc(np, 35000, want), url = np.url();
       dbg("click", target.text, "opened a tab", url, d.text.length, "chars");
-      if (d.ok && await isTermsPage(d.text, await pageMeta(np), { fast: true })) return { r: { href: url, text: d.text, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
-      tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} → ${url} (${d.ok ? "not terms-like" : d.note})`);
+      const where = `click "${target.text}"${hub ? ` on ${at}` : ""} → ${url}`;
+      if (d.ok && shell(d)) { tried.push(`${where} (lobby shell)`); return { navigated: false, d }; }
+      if (d.ok && await isTermsPage(d.text, await pageMeta(np), ownUrl(url) && !(d.frame && !ownUrl(d.frameUrl || "")) ? { fast: true } : elsewhere)) return { r: { href: url, text: d.text, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
+      tried.push(`${where} (${d.ok ? "not terms-like" : d.note})`);
       return { navigated: false, d };
     } finally { await np.close().catch(() => {}); }
   };
@@ -718,9 +738,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     for (let i = 0; i < 8 && !opened && !moved() && !changed(await bodyText(page)); i++) await sleep(1500);
     if (opened) return readPopup(opened, target, at, hub);
     popup.then((p) => p && p.close().catch(() => {}));
-    let d = await readDoc(page, 15000, readsLikeTerms);
+    // Read with `want`: a page the click navigated to that shows the lobby's chrome first is read once its document arrives.
+    let d = await readDoc(page, 15000, want);
     const navigated = moved();
-    if ((navigated || changed(d.text)) && !readsLikeTerms(d.text) && await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms);
+    if ((navigated || changed(d.text)) && !readsLikeTerms(d.text) && await expandSections(page)) d = await readDoc(page, 10000, want);
     dbg("click", target.text, navigated ? page.url() : "no navigation", d.text.length, "chars");
     // No navigation and the hidden text is the page's own: nothing opened, whatever it says about terms.
     const unchanged = !navigated && d.hidden && sameAsLobby(d.text, pageHidden);
@@ -728,7 +749,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (!navigated && (d.frame || unchanged || !changed(d.text))) {
       const f = d.frame ? { text: d.text, url: d.frameUrl } : await frameText(page, readsLikeTerms);
       if (f) {
-        if (await isTermsPage(f.text, { ...await pageMeta(), url: f.url || at }, { fast: fastInPlace(f.text) })) return { r: { href: f.url || `${at}#"${target.text}"`, text: f.text, via: "click", frame: true, tried } };
+        if (await isTermsPage(f.text, { ...await pageMeta(), url: f.url || at }, ownUrl(f.url || "") ? { fast: fastInPlace(f.text) } : elsewhere)) return { r: { href: f.url || `${at}#"${target.text}"`, text: f.text, via: "click", frame: true, tried } };
         tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (opened a frame${f.url ? ` ${f.url}` : ""}, not terms-like)`);
         return { navigated, d };
       }
@@ -739,7 +760,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Opened in place, the pattern may accept it only under a general-terms heading with no promotion in sight
     // (fastInPlace); otherwise (betportal's "SPOOKY FRIDAY / 50 % FREDAGSBONUS" modal) only Jev may accept it.
     const fast = navigated || fastInPlace(doc);
-    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), { fast })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
+    // A page the click navigated to that is still the lobby shell (an app routing the click to its home) is not the terms.
+    if (navigated && d.ok && shell(d)) { tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (lobby shell)`); return { navigated, d }; }
+    if (!unchanged && (navigated ? d.ok : changed(d.text)) && await isTermsPage(doc, await pageMeta(), d.frame && !ownUrl(d.frameUrl || "") ? elsewhere : { fast })) return { r: { href: page.url() !== at ? page.url() : `${at}#"${target.text}"`, text: doc, via: "click", hidden: !!d.hidden, frame: !!d.frame, tried } };
     tried.push(`click "${target.text}"${hub ? ` on ${at}` : ""} (${navigated ? (d.ok ? "not terms-like" : d.note) : !unchanged && changed(d.text) ? "opened, not terms-like" : "nothing opened"})`);
     return { navigated, d };
   };
@@ -844,7 +867,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
       // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text (or hidden text) again and passes
       // the terms check.
-      const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && sameAsLobby(d.text, lobbyHidden)) && (await isTermsPage(d.text, await pageMeta()));
+      const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && hiddenShell(d.text)) && (await isTermsPage(d.text, await pageMeta(), judging({}, true, d)));
       dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
       if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, frame: !!d.frame, tried });
       const hopped = await hopFrom(d, guessUntil);

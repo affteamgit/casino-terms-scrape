@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -1260,4 +1260,114 @@ test("a terms click that opens a PDF in a new tab reads the PDF and closes the t
       assert.equal(page.context().pages().length, 1, "the tab is closed");
     } finally { await browser.close(); }
   });
+});
+
+// A lobby whose chrome reads like terms (HEADER's menu, ELARA_SEO in the footer) and whose terms are reached only by a
+// click: `clickable` is the footer's terms control.
+const CLICK_CHROME = (clickable, main = `<p>${"Play slots and live games every day. ".repeat(30)}</p>`, end = "") => `<!doctype html><html><body>${HEADER}<main>${main}</main><footer>${clickable}${ELARA_SEO}</footer>${end}</body></html>`;
+const POPUP_LINK = (url) => `<a href="#" onclick="window.open('${url}'); return false">Terms and Conditions</a>`;
+// The search with the lobby's chrome reading like terms; `pages` adds routes on casino.test, `jev` is the Jev stand-in.
+const searchClick = async (lobbyHtml, pages, jev = { notes: [] }, other = {}, chrome = true) => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await site(page.context(), { "/": lobbyHtml, ...pages });
+    for (const [origin, routes] of Object.entries(other)) await page.context().route(`${origin}/**`, (r) => { const p = new URL(r.request().url()).pathname; return routes[p] ? r.fulfill({ status: 200, contentType: "text/html", body: routes[p] }) : r.abort("aborted"); });
+    await page.goto("https://casino.test/");
+    if (chrome) assert.ok(readsLikeTerms(await page.evaluate(() => document.body.innerText)), "the lobby's own chrome reads like terms");
+    const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+    return { ...r, tabs: page.context().pages().length };
+  } finally { await browser.close(); }
+};
+
+test("a terms click whose tab shows the lobby's chrome for 6 s and then the terms reads the terms, not the chrome", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 6000)</script>`;
+  const lobbyHtml = CLICK_CHROME(POPUP_LINK("/terms-popup.html"));
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/terms-popup.html": CLICK_CHROME(POPUP_LINK("/terms-popup.html"), "", late) }));
+  assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+  assert.equal(r.via, "click");
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+test("a terms click whose tab is only the lobby's chrome is not the terms", async () => {
+  const lobbyHtml = CLICK_CHROME(POPUP_LINK("/terms-popup.html"));
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/terms-popup.html": lobbyHtml }));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.some((t) => /^click "Terms and Conditions" → https:\/\/casino\.test\/terms-popup\.html \(lobby shell\)$/.test(t)), r.tried.join(" | "));
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+test("a terms click that navigates to a page that is only the lobby's chrome is not the terms", async () => {
+  const lobbyHtml = CLICK_CHROME(`<span onclick="location.href = '/app/terms'">Terms and Conditions</span>`);
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/app/terms": lobbyHtml }));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes('click "Terms and Conditions" (lobby shell)'), r.tried.join(" | "));
+});
+
+test("a terms click that opens a tab on another site is Jev's alone: no on Jev's no, yes on Jev's yes; a tab on the casino's own site is the pattern's", async () => {
+  const other = { "https://help.other.test": { "/terms.html": TERMS_PAGE() } };
+  const lobbyHtml = LOBBY(POPUP_LINK("https://help.other.test/terms.html"));
+  const log = [];
+  const no = await withJevKey(() => searchClick(lobbyHtml, {}, { notes: [], ask: fakeAsk({ accept: () => false, log }) }, other, false));
+  assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+  assert.ok(log.includes("page"), "Jev judged the tab");
+  const yes = await withJevKey(() => searchClick(lobbyHtml, {}, { notes: [], ask: fakeAsk({ accept: () => true }) }, other, false));
+  assert.equal(yes.href, "https://help.other.test/terms.html", yes.tried.join(" | "));
+  assert.equal(yes.via, "click");
+  const off = await withoutJev(() => searchClick(lobbyHtml, {}, { notes: [] }, other, false));
+  assert.equal(off.text, "", `no key: accepted ${off.href} via ${off.via}`);
+  // the same tab on the casino's own site is accepted on the pattern, whatever Jev says
+  const own = await withJevKey(() => searchClick(LOBBY(POPUP_LINK("/terms.html")), { "/terms.html": TERMS_PAGE() }, { notes: [], ask: fakeAsk({ accept: () => false }) }, {}, false));
+  assert.equal(own.href, "https://casino.test/terms.html", own.tried.join(" | "));
+});
+
+test("a Jev-only candidate is skipped while Jev is enabled but down, whether the footer question or the page question failed; without a key the pattern decides", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    // The general terms do not load, so the sportsbook's terms (a product-named link: Jev-only) are the next candidate.
+    await site(page, { "/": LOBBY(ELARA_FOOTER), "/spotsbook-terms-and-conditions": TERMS_PAGE("Sportsbook Terms and Conditions") });
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const down = await withJevKey(() => search({ notes: [], ask: async () => { throw new Error("jev http 529: overloaded"); } }));
+    assert.equal(down.text, "", `Jev down: accepted ${down.href}`);
+    const pageFails = async (state, questions) => { if (questions.is_terms) throw new Error("jev http 529: overloaded"); return fakeAsk()(state, questions); };
+    const failed = await withJevKey(() => search({ notes: [], ask: pageFails }));
+    assert.equal(failed.text, "", `Jev failed on the page: accepted ${failed.href}`);
+    const off = await withoutJev(() => search({ notes: [] }));
+    assert.equal(off.href, "https://casino.test/spotsbook-terms-and-conditions", off.tried.join(" | "));
+  } finally { await browser.close(); }
+});
+
+test("a shell whose hidden text is the lobby's hidden SEO block plus 1,600 characters of other copy is not the terms", async () => {
+  const copy = `<div hidden><p>${"Our live studio streams roulette and blackjack tables around the clock. ".repeat(23)}</p></div>`;
+  assert.ok(copy.replace(/<[^>]+>/g, "").length >= 1600);
+  const main = `<p>${"Play slots and live games every day. ".repeat(30)}</p>`;
+  const r = await searchChrome(CHROME(main, HIDDEN_SEO + copy), CHROME(main, HIDDEN_SEO));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+test("a guessed path whose hidden terms sit under a <div> menu the lobby also hides is the terms (the menu alone is not the lobby's hidden shell)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const shell = (main) => `<!doctype html><html><body><header><button>Log in</button><button>Join now</button></header>${DIV_MENU}<main>${main}</main><footer><a href="/about">About us</a></footer></body></html>`;
+      await site(page, { "/": shell(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`), "/terms-and-conditions": shell(INTRO + `<div hidden>${GENERALS(14)}</div>`) });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.equal(r.via, "guess");
+      assert.equal(r.hidden, true);
+      assert.match(r.text, /14\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("otherDocsFor: the payments and KYC pages, none when Jev classified the lobby", () => {
+  const lobby = { url: "https://x.com/", links: [{ href: "https://x.com/payments", text: "Payments" }, { href: "https://x.com/kyc", text: "KYC" }] };
+  assert.deepEqual(otherDocsFor(lobby, { href: "", lobbyClass: null }).map((d) => d.kind), ["payments", "kyc"]);
+  assert.deepEqual(otherDocsFor(lobby, { href: "https://x.com/payments", lobbyClass: null }).map((d) => d.kind), ["kyc"]);
+  assert.deepEqual(otherDocsFor(lobby, { href: "", lobbyClass: "not_casino" }), []);
 });
