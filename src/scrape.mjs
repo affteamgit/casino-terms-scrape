@@ -160,9 +160,11 @@ async function attempt(job, url, country, type) {
     const text = await settle(page, httpStatus);
     const finalUrl = page.url();
     const anchors = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80), footer: !!a.closest("footer, [class*=footer i], #footer") }))).catch(() => []);
+    // ok, parked, closed, geo_blocked, blocked_http, challenge, stuck_on_tracker, maintenance or dead_or_empty (not_casino comes from Jev, below)
     const status = lobbyStatus({ text, httpStatus, finalUrl, links: anchors });
     // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
     if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
+    if (status === "closed") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "the site says it has closed" };
     const { ip, ip_country } = status !== "ok" ? { ip: "", ip_country: "" } : type === "local" ? await localExit() : await whereAmI(context);
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
@@ -246,7 +248,7 @@ async function run(job) {
       }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
-      if (r.status === "parked") break outer; // a for-sale page is the same from every exit; an exit that reached the casino earlier still stands as the fallback
+      if (r.status === "parked" || r.status === "closed" || r.status === "not_casino") break outer; // a for-sale or closed site is the same from every exit; an exit that reached the casino earlier still stands as the fallback
       if (r.status === "challenge" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {

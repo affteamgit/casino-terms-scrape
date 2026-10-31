@@ -35,7 +35,8 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 
 1. Run the local pass (see "Locally (the first pass)" below) and merge: `node src/merge.mjs` → `out/results.csv`.
 2. `node src/retry-ids.mjs out/results.csv` writes `input/retry-ids.txt`: every casino not reached, or reached without terms
-   (`no_url` and `parked` rows have nothing to retry). Commit and push it.
+   (`no_url`, `parked`, `closed` and `not_casino` rows have nothing to retry). It also lists `ok` rows whose `jev` column says
+   `error:` (Jev did not judge them) as `jev-failed`, whether or not terms were found. Commit and push it.
 3. Add the `TYPESAFE_API_KEY` repository secret (Repository settings → Secrets) so Jev runs on Actions too; without
    it the `jev` column says `off`. Then Actions → **Scrape casino terms** → `only_ids` = `@input/retry-ids.txt`.
 4. Download the **results** artifact and merge the two: `mkdir -p out/final && cp out/results.csv
@@ -73,7 +74,7 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 |---|---|
 | `id`, `source`, `casino`, `review_url` | the casino (id = the input row its job started from; `source` lists every site it appears on, e.g. `casinoguru+lcb`) |
 | `start_type`, `start_url` | `tracking` link, or the casino `domain` when the link was N/A |
-| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `maintenance` (a bare page that says the site is down for maintenance), `load_error`, `connect_error`, `timeout` (no result within the 20-minute casino budget; its browser is closed), `crash` (the run threw; `error` says why), `no_url` |
+| `status` | `ok`, `geo_blocked` (the page says so, in English, Portuguese, Russian, Spanish, German, French, Italian or Turkish), `blocked_http` (bare 403/451, or an edge/WAF refusal page), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `closed` (a short page that says the site has ceased: "closed for business", "no longer available"), `not_casino` (Jev judged the page not an online gambling operator's site: an affiliate, review or news site, a blog, a template, a software vendor; terminal like `parked`), `maintenance` (a bare page that says the site is down for maintenance), `load_error`, `connect_error`, `timeout` (no result within the 20-minute casino budget; its browser is closed), `crash` (the run threw; `error` says why), `no_url` |
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
 | `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`dc-` prefix = datacenter proxy, `direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |

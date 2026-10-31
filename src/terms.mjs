@@ -10,21 +10,42 @@ export const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 
 export const CHALLENGE_TEXT = /just a moment|checking your browser|verify you are human|cf-chl|attention required|human verification|performing security verification/i;
 export const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
-export const BLOCK_TEXT = /not (available|accessible) (in|from) your (country|region|location)|access (is )?(denied|restricted)|restricted (country|region|territor)|can(?:'|no)t access from this country|unavailable in your (country|region)|we do not accept players from|your country is (blocked|restricted)|403 forbidden|error 1020|sorry, you have been blocked/i;
+// A page that says the casino is not offered where the visitor is. One alternative per page shape, grouped by language:
+// English "not offered ... your location" (888), "residing in your country", "unavailable in your location" (Mr Green);
+// Portuguese government block page, Russian "location restriction", Spanish, German, French, Italian and Turkish forms.
+export const BLOCK_TEXT = new RegExp([
+  "not (available|accessible) (in|from) your (country|region|location)", "access (is )?(denied|restricted)", "restricted (country|region|territor)",
+  "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
+  "403 forbidden", "error 1020", "sorry, you have been blocked",
+  "(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)", "residing in your (country|location|jurisdiction)",
+  "acesso bloqueado", "medida provisória", "fora do ar por determinação",
+  "ограничение местоположения", "не можем принять игроков",
+  "no está disponible en (tu|su) (país|región)", "in Ihrem Land nicht verfügbar", "pas disponible dans votre pays", "non disponibile nel tuo paese", "ülkenizde kullanılamıyor",
+].join("|"), "i");
+// A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian, Spanish.
+export const CLOSED_TEXT = /closed for business|no longer (available|operating|accepting|in operation)|has (been )?(closed|discontinued)|ceased (operations|trading)|permanently closed|site (is|has) closed|cessé ses activités|geschlossen|chiuso definitivamente|cerrado permanentemente/i;
+// An edge or WAF refusal page: Akamai "Access Denied / Reference #18.x", Incapsula "Incident ID", edgesuite, Slovak/Czech "request denied".
+export const WAF_TEXT = /access denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
+// A domain marketplace's host: whatever it serves (even its own error page) the domain is for sale.
+export const MARKETPLACE_HOSTS = /(^|\.)(forsale\.godaddy\.com|sedo\.com|dan\.com|afternic\.com|hugedomains\.com|parkingcrew\.net)$/i;
 // A short page that says the site is down for maintenance (thestakehouse.io): the casino is not reached this time.
 const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenance|we(?:'|’)ll be back (soon|shortly)|back in a (few|couple of) (minutes|hours)/i;
 
 /**
  * What the first page says about reaching the casino. The checks run in this order: a domain marketplace's address,
  * a bot check (whatever the HTTP code: lumocasino answers 405 with "Human Verification"), a page that says the country
- * is blocked, a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page (`links`: the
- * page's anchors; a page with ten or more, or with a terms link on its own domain, is not one), and last an
+ * is blocked, an edge/WAF refusal, a short page that says the site has closed (`closed`; `not_casino` is Jev's alone,
+ * assigned elsewhere), a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page (`links`:
+ * the page's anchors; a page with ten or more, or with a terms link on its own domain, is not one), and last an
  * error code or an empty page. Anything else is "ok".
  */
 export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] }) {
   if (isParkedUrl(finalUrl)) return "parked"; // a domain marketplace answers for it, whatever it says
   if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "challenge";
   if (BLOCK_TEXT.test(text.slice(0, 5000))) return "geo_blocked"; // the page says so
+  if (WAF_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "blocked_http"; // an edge refusal page, whatever the HTTP code
+  // A short page that says the site has ceased; a page that links its own terms is a casino with a notice.
+  if (text.length < 5000 && CLOSED_TEXT.test(text.slice(0, 3000)) && !termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl))))) return "closed";
   if (httpStatus === 403 || httpStatus === 451) return "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
   if (TRACKER_HOSTS.test(host(finalUrl))) return "stuck_on_tracker";
   if (isParked(text)) return "parked"; // a for-sale page, not a casino
@@ -89,7 +110,7 @@ export const isParked = (text) => text.length < 6000 && PARKED_TEXT.test(text.sl
 // Some for-sale pages refuse the scraper (godaddy's says "Access Denied"), so the address itself is also read:
 // a domain marketplace or parking service is not a casino whatever it answers.
 const PARKED_HOST = /(^|\.)(sedo\.com|sedoparking\.com|dan\.com|afternic\.com|hugedomains\.com|parkingcrew\.net|bodis\.com|undeveloped\.com)$|^forsale\.|^parked\./i;
-export const isParkedUrl = (u) => { try { return PARKED_HOST.test(new URL(u).hostname); } catch { return false; } };
+export const isParkedUrl = (u) => { try { const h = new URL(u).hostname; return PARKED_HOST.test(h) || MARKETPLACE_HOSTS.test(h); } catch { return false; } };
 // A for-sale lander served on the casino's own domain (betfunk.com, scoobybet.com: Dan.com listings) links the
 // marketplace's own terms and privacy pages. A marketplace's legal pages are never a casino's terms.
 const MARKETPLACE_HOST = /(^|\.)(dan\.com|sedo\.com|godaddy\.com|afternic\.com|hugedomains\.com|undeveloped\.com|namecheap\.com|bodis\.com|parkingcrew\.net|sedoparking\.com)$/i;

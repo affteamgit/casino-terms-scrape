@@ -7,8 +7,10 @@ import { join } from "node:path";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 
-/** How good a row is: 2 = terms read, 1 = reached but no terms, 0 = anything else. */
-const rank = (r) => (r.status === "ok" ? (r.terms_found === "yes" ? 2 : 1) : 0);
+// Statuses that say "reached and classified": the casino was seen and there is nothing more to get from it.
+const CLASSIFIED = new Set(["parked", "closed", "not_casino"]);
+/** How good a row is: 2 = terms read, 1 = reached but no terms, or reached and classified (parked, closed, not a casino), 0 = anything else. */
+const rank = (r) => (r.status === "ok" ? (r.terms_found === "yes" ? 2 : 1) : CLASSIFIED.has(r.status) ? 1 : 0);
 
 /** The better of two rows for one casino; on a tie the later row (b) wins, so a retry replaces a local miss. */
 export function better(a, b) {
