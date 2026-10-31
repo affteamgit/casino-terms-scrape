@@ -229,6 +229,26 @@ test("askJev: 429 and every 5xx are retried", async () => {
   } finally { delete process.env.TYPESAFE_API_KEY; }
 });
 
+test("askJev: a retry-after of up to 30 s replaces the schedule's wait for that attempt; a longer or unreadable one does not", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    const withRetryAfter = (status, value) => ({ ...reply(status, "slow"), headers: new Headers(value === undefined ? {} : { "retry-after": value }) });
+    for (const [value, expected] of [["3", 3000], ["30", 30000], ["0", 0], ["120", 2000], ["31", 2000], ["soon", 2000], ["", 2000], [undefined, 2000]]) {
+      const { fetch, calls } = sequence(withRetryAfter(429, value), reply(200, "", { answers: {} }));
+      const { sleep, delays } = recorder();
+      assert.deepEqual(await askJev({}, {}, { fetch, sleep }), {});
+      assert.equal(calls.length, 2);
+      assert.deepEqual(delays, [expected], `retry-after ${JSON.stringify(value)}`);
+    }
+    // it applies to its own attempt only, and the schedule still bounds the attempts at four
+    const { fetch, calls } = sequence(withRetryAfter(529, "3"), reply(503, "x"), withRetryAfter(429, "1"), withRetryAfter(529, "1"));
+    const { sleep, delays } = recorder();
+    await assert.rejects(askJev({}, {}, { fetch, sleep }), /^Error: jev http 529: slow$/);
+    assert.equal(calls.length, 4);
+    assert.deepEqual(delays, [3000, 5000, 1000]);
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
 test("askJev: a 4xx other than 429 throws at once, with no wait and no second call", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
   try {

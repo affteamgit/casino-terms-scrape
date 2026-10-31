@@ -34,17 +34,27 @@ const RETRY_DELAYS = [2000, 5000, 10000]; // waits before attempts 2, 3 and 4
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Overloaded or failing on Jev's side (the 48-minute 529 outage of the full run): worth another try. Any other 4xx is not. */
 const retryable = (status) => status === 429 || status >= 500;
+const RETRY_AFTER_MAX = 30; // seconds: a longer retry-after is ignored in favour of the schedule
+/** The wait a response asks for with `retry-after` (seconds, at most RETRY_AFTER_MAX), in ms; null when absent, unreadable or longer. */
+const retryAfter = (res) => {
+  const v = res.headers?.get?.("retry-after");
+  const n = v === null || v === undefined || v.trim() === "" ? NaN : Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= RETRY_AFTER_MAX ? n * 1000 : null;
+};
 
 /**
  * One request. null without a key; the answers object otherwise. A 429, a 5xx (529 overloaded included) or a network
  * failure is tried again after 2 s, 5 s and 10 s (four attempts); the last failure is thrown as it came, so the `jev`
- * column's `error:jev http 529: ...` note stays what `retry-ids` looks for. Any other 4xx and a malformed answer throw at once.
+ * column's `error:jev http 529: ...` note stays what `retry-ids` looks for. A `retry-after` of up to 30 s replaces the
+ * schedule's wait for that attempt. Any other 4xx and a malformed answer throw at once.
  * `fetch` and `sleep` are for the tests.
  */
 export async function askJev(state, questions, { timeoutMs = 20000, fetch: f = globalThis.fetch, sleep: s = defaultSleep } = {}) {
   if (!key()) return null;
+  let asked = null; // the previous response's retry-after, in ms
   for (let i = 0; ; i++) {
-    if (i > 0) await s(RETRY_DELAYS[i - 1]);
+    if (i > 0) await s(asked ?? RETRY_DELAYS[i - 1]);
+    asked = null;
     let res;
     try {
       res = await f(API, { method: "POST", headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" }, body: JSON.stringify({ model: MODEL, state, questions }), signal: AbortSignal.timeout(timeoutMs) });
@@ -54,7 +64,7 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetch: f = g
     }
     if (!res.ok) {
       const err = new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
-      if (retryable(res.status) && i < RETRY_DELAYS.length) continue;
+      if (retryable(res.status) && i < RETRY_DELAYS.length) { asked = retryAfter(res); continue; }
       throw err;
     }
     const body = await res.json();
