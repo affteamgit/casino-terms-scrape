@@ -43,9 +43,10 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fe
 }
 
 /**
- * The lobby as Jev sees it: every footer link with a caption (in any language or script: a caption the word lists do
- * not know must still reach Jev), then the clickable texts, then legal-looking links elsewhere; one entry per href; at
- * most MAX_ENTRIES. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. With fewer
+ * The lobby as Jev sees it: legal-looking footer links in footer order, legal-looking links elsewhere, the clickable
+ * texts, then the rest of the footer with any caption (any language or script: a caption the word lists do not know
+ * must still reach Jev), last link first; one entry per href; at most MAX_ENTRIES, so a footer of game links cannot
+ * push the terms out. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. With fewer
  * than five entries the page's last anchors are added (see below). Option names
  * are sent to the model, so each id starts with the link's own words.
  */
@@ -61,9 +62,12 @@ export function linkEntries(lobby) {
     seen.add(k);
     out.push({ id: `${slug(text) || slug(path(href)) || "link"}_${out.length}`, text, href: href || "", in_footer: !!footer, kind });
   };
-  for (const l of links) if (l.footer) add(l.text, l.href, true, "link");
-  for (const c of clickables) add(c.text, "", c.footer, "text");
+  for (const l of links) if (l.footer && legal(l)) add(l.text, l.href, true, "link");
   for (const l of links) if (!l.footer && legal(l)) add(l.text, l.href, false, "link");
+  for (const c of clickables) add(c.text, "", c.footer, "text");
+  // The rest of the footer, whatever the caption (a terms link in a language the word lists do not know), from the end:
+  // the legal row is usually last, below the game links.
+  for (const l of [...links].reverse()) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
   // No footer was found and nothing reads as legal (koalabet, jasino, betportal): Jev still sees the bottom of the
   // page, the last anchors in DOM order (bottom first), on the casino's domain or a file host.
   if (out.length < 5) {

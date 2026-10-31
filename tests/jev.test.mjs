@@ -13,19 +13,20 @@ const betico = {
 
 test("linkEntries: footer links first, de-duplicated, descriptive ids, clickables as text entries, logo links without text dropped", () => {
   const e = linkEntries(betico);
-  // every footer link with a caption in footer order, then the clickable texts
-  assert.deepEqual(e.map((x) => x.text), ["Sports Betting Rules", "Terms of Service", "Privacy", "Promotions", "T&Cs apply", "Conditions:"]);
+  // legal-looking footer links, then the clickable texts, then the rest of the footer
+  assert.deepEqual(e.map((x) => x.text), ["Sports Betting Rules", "Terms of Service", "Privacy", "T&Cs apply", "Conditions:", "Promotions"]);
   assert.match(e[1].id, /^terms_of_service_\d+$/);
   assert.equal(e[1].href, "https://d2xmnpb6h303sl.cloudfront.net/static/navigation/terms_and_conditions.pdf");
   assert.equal(e[1].in_footer, true);
-  assert.deepEqual(e.slice(4, 6).map((x) => x.kind), ["text", "text"]);
+  assert.deepEqual(e.slice(3, 5).map((x) => x.kind), ["text", "text"]);
   assert.equal(new Set(e.map((x) => x.id)).size, e.length);
 });
 
 test("linkEntries: a non-footer link joins only when it looks legal", () => {
   const links = [...Array.from({ length: 5 }, (_, i) => L(`Link ${i}`, `https://x.com/f/${i}`, true)), L("User Agreement", "https://x.com/legal/user-agreement"), L("Blackjack", "https://x.com/blackjack"), L("Pravila igre", "https://x.com/p/9")];
   const e = linkEntries({ url: "https://x.com/", links, clickables: [] });
-  assert.deepEqual(e.slice(5).map((x) => x.text), ["User Agreement", "Pravila igre"]);
+  assert.deepEqual(e.slice(0, 2).map((x) => x.text), ["User Agreement", "Pravila igre"]);
+  assert.ok(!e.some((x) => x.text === "Blackjack"));
 });
 
 test("linkEntries: no footer found, so Jev sees the bottom of the page (koalabet, jasino, betportal)", () => {
@@ -42,27 +43,34 @@ test("linkEntries: no footer found, so Jev sees the bottom of the page (koalabet
   assert.equal(linkEntries({ url: "https://k.io/", links: [...links, ...footer], clickables: [] }).length, 5);
   // a few legal entries are padded, and kept ahead of the padding
   const few = linkEntries({ url: "https://k.io/", links: [L("Privacy", "https://k.io/privacy"), ...links.slice(0, 10)], clickables: [{ text: "Terms of Service", footer: false }] });
-  assert.deepEqual(few.slice(0, 2).map((x) => x.text), ["Terms of Service", "Privacy"]);
+  assert.deepEqual(few.slice(0, 2).map((x) => x.text), ["Privacy", "Terms of Service"]);
   assert.equal(few.length, 12);
 });
 
-test("linkEntries: every footer link with a caption is shown, in footer order, whatever its language or script", () => {
+test("linkEntries: every footer link with a caption is shown, whatever its language or script; legal ones first, the rest from the end of the footer", () => {
   const links = [L("Slots", "https://x.com/casino/slots"), L("Uslovi korišćenja", "https://x.com/uslovi-koriscenja", true), L("Genel Şartlar ve Kurallar", "https://x.com/sartlar", true),
     L("الشروط والأحكام", "https://x.com/ar/terms", true), L("ข้อกำหนดและเงื่อนไข", "https://x.com/th/tnc", true), L("Blackjack", "https://x.com/games/blackjack", true),
-    L("Legal", "https://x.com/about/l"), L("", "https://x.com/seal.png", true)];
+    L("Roulette", "https://x.com/games/roulette", true), L("Legal", "https://x.com/about/l"), L("", "https://x.com/seal.png", true)];
   const e = linkEntries({ url: "https://x.com/", links, clickables: [{ text: "Vilkår", footer: false }] });
-  assert.deepEqual(e.map((x) => x.text), ["Uslovi korišćenja", "Genel Şartlar ve Kurallar", "الشروط والأحكام", "ข้อกำหนดและเงื่อนไข", "Blackjack", "Vilkår", "Legal"]);
-  assert.ok(e.slice(0, 5).every((x) => x.in_footer && x.kind === "link"));
+  assert.deepEqual(e.map((x) => x.text), ["Uslovi korišćenja", "Genel Şartlar ve Kurallar", "الشروط والأحكام", "ข้อกำหนดและเงื่อนไข", "Legal", "Vilkår", "Roulette", "Blackjack"]);
+  assert.ok(e.slice(0, 4).every((x) => x.in_footer && x.kind === "link"));
   assert.ok(!e.some((x) => x.text === "Slots"), "a non-footer link that does not look legal stays out");
   assert.equal(new Set(e.map((x) => x.id)).size, e.length);
 });
 
-test("linkEntries: footer links come before non-footer legal links under the cap, and a captionless footer link with a legal path is kept", () => {
-  const links = [L("Legal", "https://x.com/legal"), ...Array.from({ length: 70 }, (_, i) => L(`Spiel ${i}`, `https://x.com/g/${i}`, true)), L("", "https://x.com/terms", true), L("", "https://x.com/logo", true)];
+test("linkEntries: a big footer of game links cannot push the legal links out, and the cap is exact", () => {
+  const links = [...Array.from({ length: 70 }, (_, i) => L(`Game ${i}`, `https://x.com/g/${i}`, true)), L("Uslovi korišćenja", "https://x.com/p/12", true), L("Terms", "https://x.com/t")];
   const e = linkEntries({ url: "https://x.com/", links, clickables: [] });
   assert.equal(e.length, MAX_ENTRIES);
-  assert.equal(e[0].text, "Spiel 0");
-  assert.ok(!e.some((x) => x.href === "https://x.com/logo"));
+  assert.deepEqual(e.slice(0, 2).map((x) => x.text), ["Uslovi korišćenja", "Terms"]);
+  assert.equal(e[2].text, "Game 69", "the rest of the footer from its end");
+  // a foreign-language terms link at the end of a long footer whose caption the word lists do not know
+  const odd = linkEntries({ url: "https://x.com/", links: [...links.slice(0, 70), L("Zasady", "https://x.com/p/13", true)], clickables: [] });
+  assert.equal(odd.length, MAX_ENTRIES);
+  assert.equal(odd[0].text, "Zasady");
+});
+
+test("linkEntries: a captionless footer link with a legal path is kept, one without is not", () => {
   const few = linkEntries({ url: "https://x.com/", links: [L("", "https://x.com/terms", true), L("", "https://x.com/logo", true)], clickables: [] });
   assert.deepEqual(few.map((x) => x.href), ["https://x.com/terms"]);
 });

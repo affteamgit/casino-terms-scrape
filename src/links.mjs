@@ -6,6 +6,7 @@ const TERMS_PATH = /terms|conditions|\btos\b|\bt-?and-?c|\bt&c|\bagb\b|termos|co
 // entry filter, the click texts and the page gate's word count. `\b` does not work on non-Latin scripts, so those words
 // match as substrings; short or common Latin words keep it. "Rules" words (pravila, kurallar, 规则) are included because
 // a terms page is often called "rules": Turkish `kurallar` stays off the possessive "kuralları" of "oyun kuralları" (game rules).
+// Known gaps: Greek `όροι` is the accented form only, Hebrew `תנאים` misses the construct "תנאי", Vietnamese needs NFC text.
 export const TERMS_I18N = [
   "voorwaarden", // Dutch
   "\\btermini\\b|condizioni", // Italian
