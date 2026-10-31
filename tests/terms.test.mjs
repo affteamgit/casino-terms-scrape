@@ -516,8 +516,10 @@ const withoutJev = async (fn) => {
   try { return await fn(); } finally { if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
 };
 // `pick`: the path of the link Jev chooses (none: it sees no terms link); `accept(page)`: its page judgment. `log` records each question asked.
+// The lobby question, asked when a search ends without the terms, is answered "a gambling site" (no status).
 const fakeAsk = ({ pick = null, accept = () => false, log = [] } = {}) => async (state, questions) => {
-  log.push(questions.has_terms ? "link" : "page");
+  log.push(questions.has_terms ? "link" : questions.kind ? "kind" : "page");
+  if (questions.kind) return { kind: { type: "choice", choice: "gambling_site", confidence: 0.9, probabilities: { gambling_site: 0.95 } } };
   if (questions.has_terms) {
     const e = pick && state.links.find((l) => l.href.endsWith(pick));
     return { has_terms: { noul: e ? 0.95 : 0.1 }, terms_link: { probabilities: e ? { [e.id]: 0.95 } : {} } };
@@ -611,7 +613,7 @@ test("a link scored 0 or less is Jev's alone: not opened without Jev or with Jev
 // Jev, scripted: `pick` as in fakeAsk; `page` and `excl` are the is_terms and not_general answers; `seen` records each
 // page question (`q`: its question, `page`: the state it was sent).
 const scriptAsk = ({ pick = null, page = 0.05, excl = 1, seen = [] } = {}) => async (state, questions) => {
-  if (questions.has_terms) return fakeAsk({ pick })(state, questions);
+  if (questions.has_terms || questions.kind) return fakeAsk({ pick })(state, questions);
   seen.push({ q: Object.keys(questions).join(","), page: state.page });
   return questions.not_general ? { not_general: { type: "noul", noul: excl } } : { is_terms: { type: "noul", noul: page } };
 };
@@ -1588,6 +1590,39 @@ test("a sign-up link or button that opens a modal: the modal's terms link is fou
       const away = await search({ "/": LOBBY(`<a href="/privacy">Privacy Policy</a>`, `<button onclick="location.href = '/account/new'">Join now</button>`), "/account/new": SUPPORT_PAGE(`<p>I accept the <a href="/terms.html">Terms and Conditions</a></p>`) });
       assert.equal(away.href, "https://casino.test/terms.html", away.tried.join(" | "));
       assert.equal(away.via, "signup-page");
+    } finally { await browser.close(); }
+  });
+});
+
+// 2aries.com, legolas.bet: an affiliate or review site whose own /terms page Jev rightly rejects (0.2). The lobby question
+// is asked whenever the search ends without the terms, candidates or not.
+test("a lobby whose terms link Jev rejects is still classified by Jev's lobby judgment: not a gambling site becomes not_casino, a gambling site stays unclassified", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const review = `<!doctype html><html><head><title>Terms of Use</title></head><body><h1>Terms of Use</h1>${Array.from({ length: 30 }, (_, i) => `<p>Review ${i + 1}: we compare online casino number ${i + 1} and write an honest review of it for our readers.</p>`).join("")}</body></html>`;
+      await site(page, { "/": LOBBY(`<a href="/terms">Terms</a>`), "/terms": review });
+      const search = async (option, p, log) => {
+        await page.goto("https://casino.test/");
+        const ask = async (state, questions) => {
+          log.push(Object.keys(questions)[0]);
+          if (questions.has_terms) return { has_terms: { noul: 0.1 }, terms_link: { probabilities: {} } };
+          if (questions.kind) return { kind: { type: "choice", choice: option, confidence: 0.9, probabilities: { [option]: p, other: 1 - p } } };
+          return { is_terms: { noul: 0.2 } };
+        };
+        return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask });
+      };
+      const log = [];
+      const affiliate = await search("not_gambling_site", 0.95, log);
+      assert.equal(affiliate.lobbyClass, "not_casino", affiliate.tried.join(" | "));
+      assert.ok(!affiliate.text, `accepted ${affiliate.href}`);
+      assert.ok(affiliate.tried.includes("https://casino.test/terms (not terms-like)"), affiliate.tried.join(" | "));
+      assert.ok(log.includes("is_terms"), "Jev judged the page");
+      assert.equal(log.filter((q) => q === "kind").length, 1, "the lobby question is asked once");
+      const casino = await search("gambling_site", 0.95, []);
+      assert.equal(casino.lobbyClass ?? null, null);
+      assert.ok(!casino.text, `accepted ${casino.href}`);
     } finally { await browser.close(); }
   });
 });

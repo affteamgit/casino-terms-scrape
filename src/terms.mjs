@@ -486,10 +486,10 @@ export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", .
 /**
  * Opens the casino's terms, in this order: Jev's picks, then anchors that score as the general terms (up to three
  * besides the picks); for apps whose footer routes from plain elements, a click on the element that reads like the
- * terms link; the registration page's terms link, or the registration modal's; the terms links of the lobby's help or support pages; the sitemap
- * and the paths casinos commonly use; and last, anchors
- * that scored 0 or less (a promotion's terms, mostly), judged by Jev alone while it is up. Returns the page's text
- * and URL, and what was tried.
+ * terms link; the registration page's terms link, or the registration modal's; the terms links of the lobby's help or
+ * support pages; the sitemap and the paths casinos commonly use; and last, anchors that scored 0 or less (a
+ * promotion's terms, mostly), judged by Jev alone while it is up. Without the terms, Jev's lobby judgment says what the
+ * page is (`lobbyClass`). Returns the page's text and URL, and what was tried.
  * `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
  * (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
  * said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
@@ -1084,18 +1084,18 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     const s = await runGuesses(unopened());
     if (s) return s;
   }
-  if (!cands.length && !lobby.clickables.length) {
-    tried.unshift("no terms link or text on the lobby");
-    // Nothing to open: Jev says what this page is (an affiliate site, a notice in a language the patterns miss).
-    if (jevEnabled() && !jevDown) {
-      try {
-        const captions = [...lobby.links.filter((l) => l.footer).map((l) => l.text), ...lobby.clickables.map((c) => c.text)].filter(Boolean).slice(0, MAX_ENTRIES).map((t) => clip(t, 60));
-        const q = lobbyQuestion({ url: lobby.url, title: lobbyTitle, text: lobbyText, captions });
-        const answers = await ask(q.state, q.questions);
-        note(lobbySummary(answers));
-        return { href: "", text: "", via: "", tried, lobbyClass: lobbyVerdict(answers) };
-      } catch (e) { failed(e); }
-    }
+  if (!cands.length && !lobby.clickables.length) tried.unshift("no terms link or text on the lobby");
+  // The search ended without the terms, whether or not the lobby offered candidates (an affiliate site's own /terms page
+  // is rightly rejected: 2aries.com, legolas.bet): Jev says what this page is (an affiliate site, a notice in a language
+  // the patterns miss). Asked here only, so once per casino; a wall returned earlier.
+  if (jevEnabled() && !jevDown) {
+    try {
+      const captions = [...lobby.links.filter((l) => l.footer).map((l) => l.text), ...lobby.clickables.map((c) => c.text)].filter(Boolean).slice(0, MAX_ENTRIES).map((t) => clip(t, 60));
+      const q = lobbyQuestion({ url: lobby.url, title: lobbyTitle, text: lobbyText, captions });
+      const answers = await ask(q.state, q.questions);
+      note(lobbySummary(answers));
+      return { href: "", text: "", via: "", tried, lobbyClass: lobbyVerdict(answers) };
+    } catch (e) { failed(e); }
   }
   return { href: "", text: "", via: "", tried, lobbyClass: null };
 }

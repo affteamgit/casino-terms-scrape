@@ -211,9 +211,9 @@ export const LOBBY_CONFIDENCE_MIN = 0.7; // ... and the answer's confidence this
 const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", temporarily_unavailable: "maintenance", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
 
 /**
- * The lobby judgment, asked when the lobby offers no terms link or clickable: what is this page. `captions` are the
- * footer's link texts and the clickable texts. Affiliate and review sites, blogs and templates answer here what no
- * pattern could say.
+ * The lobby judgment, asked when the terms search ends without the terms (whether or not the lobby offered a terms
+ * link or clickable): what is this page. `captions` are the footer's link texts and the clickable texts. Affiliate and
+ * review sites, blogs and templates answer here what no pattern could say.
  */
 export function lobbyQuestion({ url, title, text, captions }) {
   return {
