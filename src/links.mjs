@@ -181,7 +181,7 @@ export function siblingGuesses(links, pageUrl) {
  * product segments, when what remains names the terms (/en/terms/bonus/ -> /en/terms/); (ii) the last such segment
  * without its promotion or product words, when what remains names the terms (/help/bonus-terms-and-conditions ->
  * /help/terms-and-conditions); (iii) that segment's directory with each of SIBLING_NAMES (/help/terms, ...). No guess
- * keeps a promotion's or product's segment. [] for a URL whose path names neither.
+ * keeps a promotion's or product's segment, and none ends in a bare `rules`. [] for a URL whose path names neither.
  */
 export function promoSiblingGuesses(url) {
   let u;
@@ -195,7 +195,8 @@ export function promoSiblingGuesses(url) {
   const stripped = segs[i].split(/[-_]+/).filter((w) => w && !promoWord(w)).join("-");
   if (stripped && TERMS_PATH.test(stripped)) out.push(at([...dir, stripped], slash));
   for (const n of SIBLING_NAMES) out.push(at([...dir, n]));
-  return [...new Set(out)];
+  // A bare `rules` page (/sportsbook/rules -> /rules) is a game's or a product's rules as often as the terms.
+  return [...new Set(out)].filter((g) => !/(^|\/)rules\/?$/i.test(new URL(g).pathname));
 }
 
 /**

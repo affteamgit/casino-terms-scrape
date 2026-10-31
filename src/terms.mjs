@@ -492,7 +492,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
         note(pageSummary(answers, exclusion));
         dbg("jev page", meta.url, pageSummary(answers, exclusion));
         return acceptsPage(answers) || acceptsBorderline(answers, exclusion, text);
-      } catch (e) { if (answers) note(pageSummary(answers)); failed(e); return jevOnly && fast && readsLikeTerms(text); } // Jev failed: the pattern decides
+      } catch (e) {
+        // Jev failed on the exclusion question: it was asked because the page answer fell short, so the page is rejected.
+        if (answers) { note(pageSummary(answers)); failed(e); return false; }
+        failed(e); return jevOnly && fast && readsLikeTerms(text); // Jev failed: the pattern decides
+      }
     })());
     return judged.get(jk);
   };
@@ -645,7 +649,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
       // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
       if (d.note !== "wall") { const r = await retryUnblocked(c); if (r !== undefined) return r; }
-      // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
+      // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub. Nor is a
+      // low-score page: what it links would be judged on the pattern, and only Jev may accept in that pass.
+      if (c.lowScore) return null;
       return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
     };
     if (!shell(d)) return judge(d);
@@ -663,7 +669,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // result stands; otherwise a stub under the lobby's header that links its document (clubscasino's terms page) is
     // still hopped from.
     const r = await retryUnblocked(c);
-    return r !== undefined ? r : (await hopFrom(d)) || null;
+    return r !== undefined ? r : c.lowScore ? null : (await hopFrom(d)) || null;
   };
   // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
   // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile. A tab whose URL is a
@@ -816,10 +822,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   else pools.push(sm.locs);
   // Each URL is opened once, until the budget; the first that reads as the terms (or a wall) ends the search.
   const guessed = new Set();
+  let budgetNoted = false;
   const runGuesses = async (list) => {
     for (const href of list) {
       if (guessed.has(href)) continue;
-      if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); return null; }
+      if (Date.now() > guessUntil) { if (!budgetNoted) tried.push("guessing stopped at the time budget"); budgetNoted = true; return null; }
       guessed.add(href);
       try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
       const d = await readDoc(page, 8000, readsLikeTerms);

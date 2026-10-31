@@ -629,6 +629,41 @@ test("a borderline page (Jev 0.65) is the terms when Jev also rules out the excl
   });
 });
 
+test("a borderline page whose exclusion question fails is not taken on the pattern", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`), "/info/page-7": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const answer = scriptAsk({ pick: "/info/page-7", page: 0.65 });
+      const jev = { notes: [], ask: async (state, questions) => { if (questions.not_general) throw new Error("boom"); return answer(state, questions); } };
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+      assert.ok(jev.notes.includes("page:0.65"), jev.notes.join(" "));
+      assert.ok(jev.notes.some((n) => n.startsWith("error:")), jev.notes.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("a low-score page is not hopped from: its document link is not taken on the pattern when Jev fails on the page", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const pdf = termsPdf(), read = [];
+      await site(page, { "/": LOBBY("", `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE.replace("</body>", `<p><a href="/docs/terms.pdf">Download terms</a></p></body>`) });
+      await page.route("https://casino.test/docs/terms.pdf", (r) => { read.push("pdf"); return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf }); });
+      await page.goto("https://casino.test/");
+      const failing = async (state, questions) => { if (questions.is_terms) throw new Error("boom"); return fakeAsk()(state, questions); };
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: failing });
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+      assert.ok(r.tried.some((t) => t.startsWith("https://casino.test/bonus-terms (")), r.tried.join(" | "));
+      assert.deepEqual(read, [], "the document link was not read");
+    } finally { await browser.close(); }
+  });
+});
+
 test("Jev reads a page's own text, not the lobby's header above it", async () => {
   await withJevKey(async () => {
     const browser = await chromium.launch({ channel: "chrome", headless: true });

@@ -246,5 +246,10 @@ test("promoSiblingGuesses: the general terms next to a rejected bonus or product
   const d = promoSiblingGuesses("https://x.com/promotions/welcome-offer/terms");
   assert.ok(d.includes("https://x.com/terms"), d.join(" "));
   assert.ok(d.every((u) => !/promotions|welcome|offer/.test(u)), d.join(" "));
+  // a bare /rules guess is left out: the pattern would read any rules page as terms
+  for (const u of ["https://x.com/sportsbook/rules", "https://x.com/tournament-rules", "https://x.com/rules/bonus"]) {
+    const g = promoSiblingGuesses(u);
+    assert.ok(g.length && !g.some((x) => /\/rules\/?$/.test(new URL(x).pathname)), `${u}: ${g.join(" ")}`);
+  }
   for (const u of ["https://x.com/en/terms/", "https://x.com/terms-and-conditions", "https://x.com/preferences/terms", "https://x.com/", "not a url"]) assert.deepEqual(promoSiblingGuesses(u), [], u);
 });
