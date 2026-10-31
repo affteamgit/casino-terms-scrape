@@ -82,11 +82,11 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 | `terms_tried` | the terms candidates that failed, with the reason, for rows with `terms_found = no` |
 | `mb` | megabytes moved through the proxy for this casino, across all its sessions (Browserless bills 6 units per residential MB) |
 | `jev` | what Jev (TypeSafe AI) answered: `link:<P there is a terms link>/<P of its pick>`, `page:<P this page is the terms>` per page it judged, `lobby:<option>:<P>` when the lobby had no terms link and Jev said what the page is (at P 0.8 or more the option gives the status: `geo_or_regulatory_notice` → `geo_blocked`, `closed_or_suspended`, a permanent closure only, → `closed`, `temporarily_unavailable`, maintenance, an outage or a suspension, → `maintenance`, `parked_or_for_sale` → `parked`, `not_gambling_site` → `not_casino`, `error_or_bot_wall` → `blocked_http`; `gambling_site` leaves `ok`), `off` without a key, `error:…` when the call failed |
-| `pages` | which pages were read: footer, terms, payments, KYC/AML |
+| `pages` | which pages were read: footer, terms, payments, KYC/AML; the terms entry says how it was reached (`(via …)`) and read (`(hidden text)`, `(frame)` for a document in an iframe, `(pdf)`); a lobby Jev classified has no payments or KYC pages |
 | `licence_numbers`, `jurisdictions` | pattern-matched from the text |
 | `q_licence`, `q_owner`, `q_withdrawal_limits`, `q_withdrawal_time`, `q_installments`, `q_kyc`, `q_restricted` | raw quotes, one per line, each ending with ‹the page it came from› |
 | `footer` | the landing page's footer text |
-| `error` | the HTTP status or error for failed rows |
+| `error` | the HTTP status or error for failed rows; `Jev: the lobby is <status>` when Jev's lobby judgment gave the status |
 
 ## How it reads a casino
 
@@ -114,8 +114,12 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
    when it is confident one exists its pick is tried first (`via jev`). A page the terms pattern rejects is judged by
    Jev before it is given up on; Jev reads what the page adds beyond the lobby's header and footer, and a borderline
    answer (0.5 to 0.7) is accepted only when Jev also rules out a promotion's, a product's or a policy page
-   (`page:0.65 excl:0.12` in the `jev` column). Terms hidden in collapsed sections are read from the DOM (`hidden text`), and PDFs
-   are read with pdf.js (`pdf`).
+   (`page:0.65 excl:0.12` in the `jev` column). A link the heuristic does not rank as the general terms (a product's
+   terms, a Jev pick it scores 0 or less) and a tab or frame on another site are Jev's to accept: while Jev is down (a
+   call failed after its retries) they are skipped, and only without a key does the pattern decide such a link. A page
+   that is still the lobby's shell, through a link, a tab or a click, is waited on until its document arrives and is
+   never the terms itself. Terms hidden in collapsed sections are read from the DOM (`hidden text`), a document in an
+   iframe from the frame (`frame`), and PDFs with pdf.js (`pdf`).
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.
 
