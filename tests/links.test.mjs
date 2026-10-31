@@ -212,3 +212,13 @@ test("a caption that names a product without the casino ranks below the general 
   assert.equal(termsScore(L("Casino & Sports Terms", "https://elarabet.com/terms-and-conditions", true), page), general, "a caption that also says casino keeps its score");
   assert.equal(termsScore(L("Poker Terms", "https://x.com/poker/terms", true), "https://x.com/"), termsScore(L("Terms", "https://x.com/poker/terms", true), "https://x.com/") , "caption and path naming the product: one penalty");
 });
+
+test("termsCandidates: a caption alone in a language the path does not speak is a candidate (Serbian, German, Japanese, Turkish, Thai)", () => {
+  for (const text of ["Uslovi korišćenja", "Allgemeine Geschäftsbedingungen", "利用規約", "Şartlar ve Koşullar", "ข้อกำหนดและเงื่อนไข", "الشروط والأحكام", "이용약관", "Điều khoản sử dụng"]) {
+    const c = termsCandidates([L(text, "https://x.com/p/12", true)], "https://x.com/");
+    assert.ok(c.length === 1 && c[0].score > 0, `${text}: ${JSON.stringify(c)}`);
+  }
+  // game rules in Turkish (possessive form) are not terms
+  assert.deepEqual(termsCandidates([L("Oyun Kuralları", "https://x.com/p/12", true)], "https://x.com/"), []);
+  assert.deepEqual(termsCandidates([L("Blackjack", "https://x.com/p/12", true)], "https://x.com/"), []);
+});

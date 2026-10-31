@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT, TERMS_I18N } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
@@ -215,7 +215,7 @@ export const sameAsLobby = (text, ref) => !!ref.len && (fingerprint(text) === re
 // instead of anchors (Lebull's footer), the short texts that read like a terms link, marked so they can be clicked:
 // plain elements (betportal's <span>Vilkår</span>) and anchors with no real href (koalabet's router links: no href,
 // "", "#" or javascript:).
-const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
+export const CLICK_TEXT = `${TERMS_TEXT.source}|\\bregler\\b`;
 // A caption that is not the terms link: other policies, a product's rules, and a promotion's "T&Cs apply" or
 // "Bonus terms" (a promotion's modal is not the general terms). Not the whole of PROMO: "refer", "registration",
 // "challenge" or "drops" also match inside a terms caption ("Registration terms").
@@ -245,7 +245,7 @@ export async function readLobby(page, { quietMs = LOBBY_QUIET_MS, quietTermsMs =
     const inFooter = (el) => !!el.closest("footer, [class*=footer i], #footer") && !inBanner(el);
     const f = [...document.querySelectorAll("footer, [class*=footer i], #footer")].find((x) => !inBanner(x));
     const footer = f && f.innerText.length > 80 ? f.innerText : document.body.innerText.slice(-5000);
-    const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").trim().slice(0, 80), footer: inFooter(a) }));
+    const links = [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.getAttribute("title") || (a.querySelector("img[alt]") || {}).alt || "").trim().slice(0, 80), footer: inFooter(a) }));
     const found = [];
     // An anchor whose href goes nowhere by itself: the app routes it from a click handler.
     const router = (a) => { const h = (a.getAttribute("href") || "").trim(); return h === "" || h === "#" || /^javascript:/i.test(h); };
@@ -280,7 +280,7 @@ const DOC_LOADING = /\bloading\b/i;
 // ("word word word …" on Winoly), not content.
 const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).size < 40;
 // The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
-const TERMS_WORDS = /\bterms?\b|\bconditions?\b|agreement|termos|condi[cç]|\bagb\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden/gi;
+const TERMS_WORDS = new RegExp(`\\bterms?\\b|\\bconditions?\\b|agreement|termos|condi[cç]|\\bagb\\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden|${TERMS_I18N}`, "gi");
 export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
 // `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
 // with only the navigation is stable long before the document itself arrives (NetBet's help pages). Text that does

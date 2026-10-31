@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -873,5 +873,39 @@ test("the lobby judgment fails open: no key, a failed call, and a lobby that has
     assert.equal(withLink.lobbyClass ?? null, null);
     assert.ok(withLink.text, "the terms were found");
     assert.deepEqual(log, [], "the lobby question is not asked when the lobby has a terms link");
+  } finally { await browser.close(); }
+});
+
+test("readsLikeTerms: a 2,000-character text counts the terms words of other languages, and ordinary lobby text does not", () => {
+  const sr = "Opšti uslovi korišćenja. " + "Igrač prihvata ove uslovi i pravila igre. ".repeat(60);
+  assert.ok(sr.length >= 2000 && readsLikeTerms(sr));
+  assert.ok(!readsLikeTerms("Opšti uslovi i pravila. ".repeat(50)), "under 2,000 characters");
+  assert.ok(readsLikeTerms(("お客様は利用規約に同意するものとします。" + "x".repeat(20)).repeat(80)));
+  assert.ok(readsLikeTerms(("Kullanım Şartları ve Koşullar gereği kurallar uygulanır. " + "x".repeat(10)).repeat(40)));
+  assert.ok(!readsLikeTerms("Oyun kuralları: slot oyunları, canlı casino ve spor bahisleri. ".repeat(60)), "Turkish game rules are not terms");
+  assert.ok(!readsLikeTerms("Play slots, live casino and jackpots with the best pravilan games. Termination is easy. ".repeat(40)));
+});
+
+test("CLICK_TEXT matches terms captions across languages and not game rules", () => {
+  const re = new RegExp(CLICK_TEXT, "i");
+  for (const t of ["Şartlar ve Koşullar", "Uslovi korišćenja", "Termeni și condiții", "利用規約", "Voorwaarden", "Términos y condiciones", "Vilkår", "Regler", "Умови використання", "User Agreement", "T & Cs", "Allgemeine Geschäftsbedingungen"]) assert.ok(re.test(t), t);
+  for (const t of ["Oyun Kuralları", "Blackjack", "Slots"]) assert.ok(!re.test(t), t);
+});
+
+test("readLobby: an image-only link takes its caption from aria-label, then title, then the image's alt", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<!doctype html><html><body><footer><p>${"Footer text. ".repeat(10)}</p>
+      <a href="https://c.com/a" aria-label="Aria caption"><img src="data:," alt="Alt a"></a>
+      <a href="https://c.com/b" title="Title caption"><img src="data:," alt="Alt b"></a>
+      <a href="https://c.com/c"><img src="data:," alt="Uslovi korišćenja"></a>
+      <a href="https://c.com/d"><img src="data:,"></a></footer></body></html>`);
+    const lobby = await readLobby(page, { quietMs: 1500, maxMs: 4000 });
+    const text = (h) => lobby.links.find((l) => l.href === h).text;
+    assert.equal(text("https://c.com/a"), "Aria caption");
+    assert.equal(text("https://c.com/b"), "Title caption");
+    assert.equal(text("https://c.com/c"), "Uslovi korišćenja");
+    assert.equal(text("https://c.com/d"), "");
   } finally { await browser.close(); }
 });
