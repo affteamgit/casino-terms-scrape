@@ -592,12 +592,18 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() });
     // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
     // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
-    const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText));
+    // The lobby's hidden text starts at its <main>, which often changes from one load to the next (a ticker, "N players
+    // online", shuffled tiles), so its opening alone does not recognise it: it is also the lobby's when it adds under
+    // 1,500 characters to the lobby's hidden text (coreText) or is within 5% of its length (sameAsLobby).
+    const hiddenShell = (t) => isShellOf(t, lobbyHidden, lobbyHiddenText) || coreText(t, lobbyHiddenText).length < 1500 || sameAsLobby(t, lobbyHidden);
+    const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && hiddenShell(d.text));
     // A snapshot that is still the lobby shell is not the document yet, even when the lobby's own words read like terms:
     // the page may render its chrome first and the document seconds later (pokerstars), so the read goes on until the
-    // budget. The same `want` decides when readDoc falls back to the hidden text and to a frame's text.
-    const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText);
-    let d = await readDoc(page, c.english ? 15000 : 35000, want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    // budget. The same `want` decides when readDoc falls back to the hidden text and to a frame's text, so the lobby's
+    // hidden text is not taken for the document either. The invented /en/ variant is read as before: isLobby rejects a
+    // shell below anyway, so waiting on it gains nothing.
+    const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText) && !hiddenShell(t);
+    let d = await readDoc(page, c.english ? 15000 : 35000, c.english ? readsLikeTerms : want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
@@ -623,7 +629,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // when it is not the lobby's own and reads like terms, is judged as the terms.
     if (await expandSections(page)) { d = await readDoc(page, 10000, want); if (!shell(d)) return judge(d, true); }
     const h = await page.evaluate(hiddenTextInPage).catch(() => "");
-    if (h && !isShellOf(h, lobbyHidden, lobbyHiddenText) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), { fast: !jevOnly(c), jevOnly: jevOnly(c) })) {
+    if (h && !hiddenShell(h) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), { fast: !jevOnly(c), jevOnly: jevOnly(c) })) {
       dbg("link", c.href, `ok ${h.length} hidden chars under the lobby shell`);
       return fuller({ href: page.url(), text: h, via: c.jev ? "jev" : "link", hidden: true, tried });
     }

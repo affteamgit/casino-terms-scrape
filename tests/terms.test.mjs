@@ -826,12 +826,12 @@ const CHROME = (main, end = "") => `<!doctype html><html><body>${HEADER}<main>${
 const CHROME_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`);
 const GENERALS = (n) => Array.from({ length: n }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("");
 const INTRO = `<h1>Terms and Conditions</h1><p>${"Please read these terms carefully before you play. ".repeat(6)}</p>`;
-// `terms`: the HTML /terms.html serves; the search runs without Jev.
-const searchChrome = (terms) => withoutJev(async () => {
+// `terms`: the HTML /terms.html serves; `lobby`: the HTML / serves. The search runs without Jev.
+const searchChrome = (terms, lobby = CHROME_LOBBY) => withoutJev(async () => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
     const page = await browser.newPage();
-    await site(page, { "/": CHROME_LOBBY, "/terms.html": terms });
+    await site(page, { "/": lobby, "/terms.html": terms });
     await page.goto("https://casino.test/");
     const lobbyText = await page.evaluate(() => document.body.innerText);
     assert.ok(readsLikeTerms(lobbyText), "the lobby's own chrome reads like terms");
@@ -865,6 +865,35 @@ test("a 404 page that is the lobby's chrome around a 'not found' line is still t
   const r = await searchChrome(CHROME(`<h1>Page not found</h1><p>${"Sorry, this page could not be found. ".repeat(5)}</p>`));
   assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
   assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+// A lobby whose <main> opens with a ticker that differs on every load and goes on with an SEO block that reads like
+// terms: its hidden text (from <main>, without header and footer) never opens the same way twice.
+const TICKER_PAGE = CHROME(`<p id="tk"></p>${ELARA_SEO}`, `<script>document.getElementById("tk").textContent = Math.floor(Math.random() * 1e9) + " players online now";</script>`);
+
+test("a shell whose hidden text is the lobby's own behind a ticker that differs on each load is not the terms", async () => {
+  const r = await searchChrome(TICKER_PAGE, TICKER_PAGE);
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+// A lobby that hides a long SEO block reading like terms (over 3 times its visible text), served on every page.
+const HIDDEN_SEO = `<div hidden>${Array.from({ length: 40 }, (_, i) => `<p>${SECTION(i)}</p>`).join("")}</div>`;
+
+test("a terms page that arrives 4 s after a shell offering the lobby's long hidden text is read once it arrives", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", HIDDEN_SEO + late), CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`, HIDDEN_SEO));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.ok(!r.hidden, "the visible document, not the lobby's hidden text");
+});
+
+test("an accordion under the lobby's chrome whose sections open on an aria-expanded button is read once they are open", async () => {
+  const parts = Array.from({ length: 10 }, (_, k) => `<button aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true'); this.nextElementSibling.hidden = false">Part ${k + 1}</button><div hidden><p>${k + 1}. ${GENERAL(k)}</p></div>`).join("");
+  const r = await searchChrome(CHROME(INTRO + parts));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /10\. These terms and conditions govern/);
+  assert.ok(!r.hidden, "read from the opened sections, not the hidden text");
 });
 
 // A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.
