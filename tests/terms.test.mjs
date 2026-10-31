@@ -1376,20 +1376,67 @@ test("otherDocsFor: the payments and KYC pages, none when Jev classified the lob
 });
 
 // winner.ro / eliteslots.ro: the footer's terms page is a hub whose body is "Descarcă documentul" -> a PDF on a CDN host
-// (y6v9r7t5.b-cdn.net). The site here is 127.0.0.1 and the PDF is served under localhost: another host, no file host.
-test("a terms hub on the casino's own domain that links its PDF on another host: the PDF is found through the hop", async () => {
-  const pdf = termsPdf(), hits = [];
+// (y6v9r7t5.b-cdn.net, a file host). `docHost` serves documents with CORS headers, so the page reads them (nothing leaves
+// for the real host). `hits` records each document request.
+const HUB = (href, caption = "Download the document") => `<!doctype html><html><head><title>Terms &amp; Conditions</title></head><body><h1>Terms &amp; Conditions</h1><p><a href="${href}">${caption}</a></p></body></html>`;
+const docHost = (page, origin, files, hits = []) => page.route(`${origin}/**`, (r) => {
+  const p = new URL(r.request().url()).pathname;
+  hits.push(p);
+  return files[p] ? r.fulfill({ status: 200, contentType: "application/pdf", headers: { "access-control-allow-origin": "*" }, body: files[p] }) : r.abort("aborted");
+});
+test("a terms hub on the casino's own domain that links its PDF on a CDN file host: the PDF is found through the hop", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), hits = [];
+      const href = "https://y6v9r7t5.b-cdn.net/documents/termsAndConditions/2/ro/Terms%20and%20Conditions.pdf";
+      await site(page, { "/": LOBBY(`<a href="/customer-support/terms-and-conditions">Terms and Conditions</a>`), "/customer-support/terms-and-conditions": HUB(href, "Descarcă documentul") });
+      await docHost(page, "https://y6v9r7t5.b-cdn.net", { "/documents/termsAndConditions/2/ro/Terms%20and%20Conditions.pdf": termsPdf() }, hits);
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.href, href);
+      assert.equal(r.via, "https://casino.test/customer-support/terms-and-conditions");
+      assert.match(r.text, /General Terms and Conditions/);
+      assert.ok(hits.length >= 1, "the document was fetched");
+    } finally { await browser.close(); }
+  });
+});
+
+// The casino's own hub vouches for a document on any host only so far as to offer it: on a host that is neither the
+// casino's nor a file host ("Blackjack" -> a game provider's PDF), only Jev may accept it, however much it reads like terms.
+test("a document the casino's own hub links on a host that is neither the casino's nor a file host is Jev's alone", async () => {
+  const run = async (jev) => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": HUB("https://provider.example/rules/blackjack.pdf", "Blackjack") });
+      await docHost(page, "https://provider.example", { "/rules/blackjack.pdf": termsPdf() });
+      await page.goto("https://casino.test/");
+      return await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+    } finally { await browser.close(); }
+  };
+  const off = await withoutJev(() => run({ notes: [] }));
+  assert.equal(off.text, "", `accepted ${off.href} via ${off.via}`);
+  assert.ok(off.tried.includes("https://provider.example/rules/blackjack.pdf (pdf not terms-like)"), off.tried.join(" | "));
+  const log = [];
+  const no = await withJevKey(() => run({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
+  assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+  assert.ok(log.includes("page"), "Jev judged the document");
+  const yes = await withJevKey(() => run({ notes: [], ask: fakeAsk({ accept: (p) => /blackjack\.pdf$/.test(p.url) }) }));
+  assert.equal(yes.pdf, true, yes.tried.join(" | "));
+  assert.equal(yes.href, "https://provider.example/rules/blackjack.pdf");
+});
+
+// A document the hub links on the casino's own domain that redirects to another host: the link the casino gave decides.
+// The site is 127.0.0.1; the redirect goes to localhost, neither the casino's host nor a file host.
+test("a hub's own-domain document that redirects to another host is judged on the link, not the final URL", async () => {
+  const pdf = termsPdf();
   const server = createServer((req, res) => {
     const u = new URL(req.url, "http://x");
-    if (u.pathname === "/documents/termsAndConditions/terms.pdf") {
-      hits.push(req.headers.host);
-      res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length });
-      return res.end(pdf);
-    }
-    const pages = {
-      "/": LOBBY(`<a href="/customer-support/terms-and-conditions">Terms and Conditions</a>`),
-      "/customer-support/terms-and-conditions": `<!doctype html><html><head><title>Terms &amp; Conditions</title></head><body><h1>Terms &amp; Conditions</h1><p><a href="http://localhost:${port}/documents/termsAndConditions/terms.pdf">Download the document</a></p></body></html>`,
-    };
+    if (u.pathname === "/documents/terms") { res.writeHead(302, { location: `http://localhost:${port}/t/terms-v7` }); return res.end(); }
+    if (u.pathname === "/t/terms-v7") { res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length }); return res.end(pdf); }
+    const pages = { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": HUB("/documents/terms") };
     res.writeHead(pages[u.pathname] ? 200 : 404, { "content-type": "text/html" });
     res.end(pages[u.pathname] || "<html><body>Not found</body></html>");
   });
@@ -1399,15 +1446,11 @@ test("a terms hub on the casino's own domain that links its PDF on another host:
     const browser = await chromium.launch({ channel: "chrome", headless: true });
     try {
       const page = await browser.newPage();
-      // Any other path on the site fails to load, so the guess phase is quick (the PDF itself is fetched from Node: CORS).
-      await page.route(`http://127.0.0.1:${port}/**`, (r) => (["/", "/customer-support/terms-and-conditions"].includes(new URL(r.request().url()).pathname) ? r.continue() : r.abort("aborted")));
+      await page.route(`http://127.0.0.1:${port}/**`, (r) => (["/", "/legal/terms-and-conditions", "/documents/terms"].includes(new URL(r.request().url()).pathname) ? r.continue() : r.abort("aborted")));
       await page.goto(`http://127.0.0.1:${port}/`);
       const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
       assert.equal(r.pdf, true, r.tried.join(" | "));
-      assert.equal(r.href, `http://localhost:${port}/documents/termsAndConditions/terms.pdf`);
-      assert.equal(r.via, `http://127.0.0.1:${port}/customer-support/terms-and-conditions`);
-      assert.match(r.text, /General Terms and Conditions/);
-      assert.ok(hits.length >= 1 && hits.every((h) => h.startsWith("localhost")), hits.join(" "));
+      assert.match(r.href, /\/(documents\/terms|t\/terms-v7)$/);
     } finally { await browser.close(); server.close(); }
   });
 });
@@ -1474,6 +1517,13 @@ test("lobbyStatus: an unauthorised-country or turn-off-your-VPN notice is geo_bl
   assert.ok(lobby.indexOf("VPN") > 5000 && lobby.length > 6000);
   assert.equal(lobbyStatus({ text: lobby, finalUrl: "https://x.com/" }), "ok");
   assert.equal(lobbyStatus({ text: "Our VPN-friendly lobby: all games are open to every authorized player. " + "Play slots and live games every day. ".repeat(40), finalUrl: "https://x.com/" }), "ok", "no instruction to turn a VPN off");
+  // A lobby's account-sanction wording about VPNs is no wall, even at the top of a short page.
+  const filler = "Play slots and live games every day. ".repeat(10);
+  for (const t of ["Using a VPN may lead us to disable your account.", "Accounts using a VPN will be deactivated.", "VPN users: we may switch off bonuses for your account.", "If we detect a VPN, we may disable withdrawals and deactivate the account.", "Accounts deactivated for VPN use are not refunded."])
+    assert.equal(lobbyStatus({ text: `${t} ${filler}`, finalUrl: "https://x.com/" }), "ok", t);
+  // A wall opens with its notice: a request to disable the VPN past the first 1,500 characters is a lobby's rule.
+  assert.equal(lobbyStatus({ text: "Play slots and live games every day. ".repeat(45) + "Please disable your VPN before playing. " + filler, finalUrl: "https://x.com/" }), "ok", "past 1,500 characters");
+  assert.equal(lobbyStatus({ text: "Play slots and live games every day. ".repeat(45) + blitz, finalUrl: "https://x.com/" }), "ok", "blitz.be's wording past 1,500 characters");
 });
 
 // 69games.cz: the terms page shows only the consent banner's text (1,496 characters) until consent is given. Here the

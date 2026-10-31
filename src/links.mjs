@@ -142,8 +142,8 @@ export function regionalSites(links, pageUrl, country = "") {
  * the links on it that lead to the document. A PDF or DOCX, or a link whose text says download, view, open or read, or
  * names the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
  * casino's own domain or a file host. A PDF or Word file linked from a page on the casino's own domain (`own`: the
- * casino's registrable domain, the page's own by default) counts whatever host serves it: the page vouches for it
- * (winner.ro's hub -> a PDF on y6v9r7t5.b-cdn.net). PDFs and links that name the terms come first; at most two.
+ * casino's registrable domain, the page's own by default) is offered whatever host serves it; fetchTerms leaves one on a
+ * host that is neither the casino's nor a file host to Jev. PDFs and links that name the terms come first; at most two.
  */
 const FILE_DOC = /\.(pdf|docx?)(\?|#|$)/i;
 export function docLinks(links, pageUrl, own = registrable(host(pageUrl))) {

@@ -19,17 +19,22 @@ export const BLOCK_TEXT = new RegExp([
   "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
   // a market exit ("no longer accepting players from Norway", "no longer accepting new registrations from the United Kingdom")
   "no longer accept(s|ing)? (new )?((players|customers|registrations) )?from",
-  // a country the casino has not authorised, or a request to turn a VPN off (blitz.be: "You are not in an authorized
-  // country. If you have a VPN activated, turn it off and try again")
-  "(not (in an? )?|not-|un)authori[sz]ed (country|region|location|territory)", "vpn[^.]{0,60}(turn it off|switch it off|disable|deactivate)|(turn|switch) (it )?off[^.]{0,30}vpn|(disable|deactivate) (your |the |any )?vpn",
   "403 forbidden", "error 1020", "sorry, you have been blocked",
   "acesso bloqueado", "medida provisória", "fora do ar por determinação",
   "ограничение местоположения", "не можем принять игроков",
   "no está disponible en (tu|su) (país|región)", "in Ihrem Land nicht verfügbar", "pas disponible dans votre pays", "non (è )?disponibile nel (tuo|suo|vostro) paese", "ülkenizde kullanılamıyor",
 ].join("|"), "i");
-// The two broad English notice forms ("services are not being offered to players residing in your location" (888)): a notice
+// The broad English notice forms ("services are not being offered to players residing in your location" (888)): a notice
 // page opens with them, while a lobby's footer disclaimer ("some promotions are not offered in your country") sits at the end.
-export const BLOCK_TEXT_HEAD = /(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)|residing in your (country|location|jurisdiction)/i;
+// The same holds for a country the casino has not authorised and a request to turn a VPN off (blitz.be: "You are not in an
+// authorized country. If you have a VPN activated, turn it off and try again"): a lobby's account rule ("using a VPN may
+// lead us to disable your account", "please disable your VPN before playing") is not a wall. The VPN-first form needs
+// "turn/switch it off" or "disable/deactivate it", not any later "disable".
+export const BLOCK_TEXT_HEAD = new RegExp([
+  "(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)", "residing in your (country|location|jurisdiction)",
+  "(not (in an? )?|not-|un)authori[sz]ed (country|region|location|territory)",
+  "vpn[^.]{0,60}((turn|switch) it off|(disable|deactivate) it\\b)", "(turn|switch) (it )?off[^.]{0,30}vpn", "(disable|deactivate) (your |the |any )?vpn",
+].join("|"), "i");
 // A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian,
 // Spanish. The subject is the site, never a bonus or an account: "no longer available" needs "this/our/the site|casino|service..." right before it
 // (or a domain-name headline), and "geschlossen" needs "dauerhaft/endgültig" or the site as its subject. `closed` is never
@@ -527,11 +532,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // a page a click navigated to.
   const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText) && !hiddenShell(t);
   // A document on another site (a tab a click opened, a frame) is Jev's alone: the pattern accepts only the casino's own
-  // pages and its file hosts ("" is a frame with no URL of its own: about:blank, srcdoc). A PDF or Word file a page on the
-  // casino's own domain links (`from`: the page a hop took it from) is the casino's whatever host serves it: the page
-  // vouches for it (winner.ro's terms hub -> a PDF on b-cdn.net).
+  // pages and its file hosts ("" is a frame with no URL of its own: about:blank, srcdoc).
   const ownDomain = registrable(host(lobby.url));
-  const ownUrl = (u, from = "") => u === "" || withinDomain(host(u), ownDomain) || FILE_HOST.test(host(u)) || (!!from && isDoc(u) && withinDomain(host(from), ownDomain));
+  const ownUrl = (u) => u === "" || withinDomain(host(u), ownDomain) || FILE_HOST.test(host(u));
   const elsewhere = { fast: false, jevOnly: true };
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
@@ -638,7 +641,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   };
   // A file document, read by its first bytes ("%PDF" or a ZIP's "PK\x03\x04"), else by its extension: pdf.js for a PDF,
   // docx.mjs for a Word file; judged like a page. The result says which (`pdf: true` or `docx: true`).
-  // A document a hop took from a page (`c.from`) on another site than the casino's, served from that site, is Jev's alone.
+  // A document a hop found (`c.from`: the page that linked it) is Jev's alone unless the link it followed (`c.link`, before
+  // a redirect) or the URL it ended at is on the casino's domain or a file host: a page on another site vouches for nothing,
+  // and the casino's own page only offers a document on any other host ("Blackjack" -> a game provider's PDF).
   const tryFile = async (c) => {
     let kind = /\.docx(\?|#|$)/i.test(c.href) ? "docx" : "pdf";
     try {
@@ -646,7 +651,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (bytes.subarray(0, 4).toString("latin1") === "%PDF") kind = "pdf";
       else if (bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50) kind = "docx";
       const text = kind === "docx" ? docxText(bytes) : await pdfText(bytes);
-      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, c.from && !ownUrl(c.href, c.from) ? elsewhere : judging(c));
+      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, c.from && !ownUrl(c.link || c.href) && !ownUrl(c.href) ? elsewhere : judging(c));
       dbg(kind, c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", [kind]: true, tried };
       tried.push(`${c.href} (${kind} ${text.length < 500 ? "thin" : "not terms-like"})`);
@@ -666,7 +671,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (!TERMS_TEXT.test([meta.title, ...meta.headings].join(" "))) return null;
     const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.title || "").trim().slice(0, 80) }))).catch(() => []);
     // A page this search has already read (the shell's own footer link back to a candidate) reads the same again. A page
-    // on the casino's own domain vouches for a PDF or Word file it links on any host; each document keeps where it was found.
+    // on the casino's own domain offers a PDF or Word file it links on any host; each document keeps where it was found.
     const docs = docLinks(links, from, ownDomain).filter((l) => !hoppedDocs.has(l.href) && !visited.has(l.href)).map((l) => ({ ...l, from }));
     dbg("hop", from, docs.map((l) => `${l.href} "${l.text}"`).join(" | ") || "no document link");
     if (!docs.length) return null;
@@ -722,7 +727,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (/Download is starting/i.test(e.message)) return tryFile(c);
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
-    if (/application\/pdf|officedocument\.wordprocessingml/i.test((resp && resp.headers()["content-type"]) || "")) return tryFile({ ...c, href: page.url() });
+    if (/application\/pdf|officedocument\.wordprocessingml/i.test((resp && resp.headers()["content-type"]) || "")) return tryFile({ ...c, href: page.url(), link: c.href });
     // A cookie wall can be all a candidate page shows until consent is given (69games.cz: only the Cookiebot text).
     if (await dismissCookies(page)) await sleep(1500);
     // The invented /en/ variant is read without `want`: isLobby rejects a shell below anyway, so waiting on it gains nothing.

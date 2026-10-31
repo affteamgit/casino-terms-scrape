@@ -22,17 +22,23 @@ function zipEntry(buf, wanted) {
     if (start + size > buf.length) throw new Error("zip: truncated entry");
     const data = buf.subarray(start, start + size);
     if (method === 0) return data;
-    if (method === 8) return inflateRawSync(data);
+    if (method === 8) return inflateRawSync(data, { maxOutputLength: 64 * 1024 * 1024 }); // a zip bomb stops at 64 MB
     throw new Error(`zip: compression method ${method}`);
   }
   throw new Error(`docx: no ${wanted}`);
 }
 
 const ENTITIES = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
-/** The document's text: one line per paragraph, tabs as spaces, the five XML entities decoded, whitespace collapsed. */
+const codePoint = (m, n) => { try { return String.fromCodePoint(n); } catch { return m; } };
+/**
+ * The document's text: one line per paragraph, tabs as spaces, the five XML entities and numeric character references
+ * decoded, whitespace collapsed. A field's code (<w:instrText>: ' HYPERLINK "…" ') and a tracked deletion (<w:delText>)
+ * are not the document's text.
+ */
 export function docxText(bytes, maxChars = 250000) {
   const xml = zipEntry(Buffer.from(bytes), "word/document.xml").toString("utf8");
-  return xml.replace(/<\/w:p>|<w:br\s*\/>|<w:cr\s*\/>/g, "\n").replace(/<w:tab\s*\/>/g, " ").replace(/<[^>]*>/g, "")
-    .replace(/&(lt|gt|quot|apos|amp);/g, (_, e) => ENTITIES[e])
+  return xml.replace(/<w:(instrText|delText)\b[^>]*>[\s\S]*?<\/w:\1>/g, "")
+    .replace(/<\/w:p>|<w:br\s*\/>|<w:cr\s*\/>/g, "\n").replace(/<w:tab\s*\/>/g, " ").replace(/<[^>]*>/g, "")
+    .replace(/&(?:(lt|gt|quot|apos|amp)|#(\d+)|#x([0-9a-f]+));/gi, (m, e, d, x) => (e ? ENTITIES[e] : codePoint(m, d ? Number(d) : parseInt(x, 16))))
     .split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n").slice(0, maxChars);
 }

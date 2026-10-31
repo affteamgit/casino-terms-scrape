@@ -23,3 +23,8 @@ test("docxText throws on what is not a DOCX", () => {
   assert.throws(() => docxText(zip({ "[Content_Types].xml": CONTENT_TYPES })), /word\/document\.xml/);
   assert.throws(() => docxText(docx(["Terms"]).subarray(0, 40)));
 });
+
+test("docxText: a field's code and a deleted run are not text; numeric character references are decoded", () => {
+  const body = `Terms</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> HYPERLINK "https://x.com" \\h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t> and Conditions</w:t></w:r><w:del w:id="1" w:author="A"><w:r><w:delText>old wording</w:delText></w:r></w:del><w:r><w:t xml:space="preserve"> player&#8217;s &#x2019;own&#x2019; &#38; more`;
+  assert.equal(docxText(docx([body])), "Terms and Conditions player’s ’own’ & more");
+});
