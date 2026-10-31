@@ -259,3 +259,10 @@ test("promoSiblingGuesses: the general terms next to a rejected bonus or product
   const e = promoSiblingGuesses("https://x.com/rules/bonus");
   assert.ok(e.includes("https://x.com/terms-and-conditions") && !e.some((u) => u.startsWith("https://x.com/rules/")), e.join(" "));
 });
+
+// "Pravila igre" / "Pravila igara" (game rules, Serbian/Croatian) are no terms caption; the general terms "Opći uvjeti igre" are.
+test("termsCandidates: a game-rules caption is not a terms candidate", () => {
+  const cand = (text, path = "/p/12") => termsCandidates([L(text, `https://x.com${path}`, true)], "https://x.com/");
+  for (const t of ["Pravila igre", "Pravila igara", "PRAVILA IGRE"]) assert.ok(!cand(t).some((c) => c.score > 0), t);
+  for (const t of ["Opći uvjeti igre", "Opšti uslovi"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
+});

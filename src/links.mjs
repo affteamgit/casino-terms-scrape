@@ -40,8 +40,10 @@ export const RULES_I18N = [
 ].join("|");
 // A caption that is a privacy policy or a game's rules in the new languages (the English ones are in NOT_TERMS below).
 // Serbian/Croatian "igre" is no veto: the general terms are "Opći uvjeti igre" / "Opšti uslovi igre", and gambling itself
-// is "igre na sreću" ("Pravila igre" still never counts a page as terms: TERMS_WORDS leaves `pravila` out).
+// is "igre na sreću". Only the narrow "pravila igre" / "pravila igara" (game rules) is one: such a caption is no terms
+// candidate and no click target, and the word never counts a page as terms (TERMS_WORDS leaves `pravila` out).
 export const NOT_TERMS_I18N = [
+  "pravila ig(re|ara)(?! na sre)", // game rules: Serbian/Croatian "Pravila igre" / "Pravila igara"; "Pravila igre na sreću" (rules of gambling) stays a candidate
   "adatvédelm|adatkezel|privatnost|zasebnost|ochrana (osobních|osobných) údajů|gizlilik|confiden[țt]ialitate", // privacy: Hungarian, Serbian/Croatian, Slovenian, Czech/Slovak, Turkish, Romanian
   "隐私|隱私|プライバシー|개인정보", // privacy: Chinese, Japanese, Korean
   "spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: German, Turkish, Chinese, Japanese, Korean, Finnish

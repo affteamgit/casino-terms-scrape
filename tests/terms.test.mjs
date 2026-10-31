@@ -1139,8 +1139,8 @@ test("CLICK_TEXT matches terms captions across languages and not game rules", ()
   // rules-worded captions are clickable candidates, but a privacy policy or a game's rules is skipped
   for (const t of ["Pravila", "Szabályzat", "Kurallar", "条款"]) assert.ok(re.test(t), t);
   const skip = new RegExp(CLICK_SKIP, "i");
-  for (const t of ["Adatvédelmi szabályzat", "Adatkezelési szabályzat", "Politika privatnosti", "Gizlilik Politikası", "Oyun Kuralları", "游戏规则", "隐私政策", "Spielregeln"]) assert.ok(skip.test(t), t);
-  for (const t of ["Opšti uslovi", "Opći uvjeti igre", "Şartlar ve Koşullar", "Allgemeine Geschäftsbedingungen", "利用規約"]) assert.ok(!skip.test(t), t);
+  for (const t of ["Adatvédelmi szabályzat", "Adatkezelési szabályzat", "Politika privatnosti", "Gizlilik Politikası", "Oyun Kuralları", "游戏规则", "隐私政策", "Spielregeln", "Pravila igre", "Pravila igara"]) assert.ok(skip.test(t), t);
+  for (const t of ["Opšti uslovi", "Opći uvjeti igre", "Pravila igre na sreću", "Şartlar ve Koşullar", "Allgemeine Geschäftsbedingungen", "利用規約"]) assert.ok(!skip.test(t), t);
 });
 
 test("readLobby: an image-only link takes its caption from aria-label, then title, then the image's alt", async () => {
