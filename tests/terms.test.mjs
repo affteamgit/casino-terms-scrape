@@ -298,6 +298,9 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   // a closed notice on a full lobby with its own terms link is a casino announcing something: not closed
   const lobbyLinks = [{ href: "https://casino.example/terms-and-conditions", text: "Terms and Conditions", footer: true }];
   assert.equal(lobbyStatus({ text: "Our sportsbook is closed for business on Sundays. " + pad, finalUrl: "https://casino.example/", links: lobbyLinks }), "ok");
+  // likewise a geo notice on a lobby that links its own terms (Entain's help.<brand>.com/closed pages): the terms are read
+  assert.equal(lobbyStatus({ text: "Sorry, this site is not available in your country. " + pad, finalUrl: "https://help.casino.example/closed", links: lobbyLinks }), "ok", "geo notice with its own terms link");
+  assert.equal(lobbyStatus({ text: "Sorry, this site is not available in your country. " + pad, finalUrl: "https://casino.example/", links: [{ href: "https://other.example/terms-and-conditions", text: "Terms and Conditions", footer: true }] }), "geo_blocked", "another domain's terms link does not count");
   assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "The old lobby has been closed for business."), "ok", "a long lobby that mentions it");
   // false terminal statuses: a registration step, a bonus line or an account notice is not a closed site
   assert.equal(st("Registrierung abgeschlossen. Vielen Dank, Ihr Konto wurde angelegt." + pad), "ok", "abgeschlossen is not geschlossen");
@@ -305,7 +308,16 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   assert.equal(st("Welcome back. Your account has been closed at your request. Open a new one below." + pad), "ok", "an account notice");
   assert.equal(st("Welcome to Example Casino. This casino bonus is no longer available. Pick another offer below." + pad), "ok", "a bonus with casino in front of it");
   assert.equal(st("We are sorry, this offer is no longer available. Pick another offer below." + pad), "ok", "an offer with we in front of it");
-  assert.equal(st("Our website is no longer available in your browser version. Please update." + pad), "closed", "the site as an explicit subject");
+  assert.equal(st("This site is no longer available. Thank you for playing." + pad), "closed", "the site as an explicit subject");
+  // availability qualified by a browser, a device or a market is not a closure: those statuses are never retried
+  assert.equal(st("Our website is no longer available in your browser version. Please update." + pad), "ok", "a browser-version notice");
+  // a market exit is a geo notice, not a closed site
+  assert.equal(st("Our casino is no longer accepting players from Norway. Thank you for your understanding." + pad), "geo_blocked", "a market exit");
+  assert.equal(st("Please note that this website is no longer accepting new registrations from the United Kingdom." + pad), "geo_blocked", "a market exit, registrations");
+  // the real closures stay closed
+  assert.equal(st("Europacasino.com is now closed for business. Thank you for playing with us over the years." + pad), "closed", "is now closed for business");
+  assert.equal(st("This website has been closed. Thank you for playing with us over the years." + pad), "closed", "has been closed");
+  assert.equal(st("Please be advised that Example Casino has officially ceased operations as of 1 March. Players can withdraw their balance until 31 March." + pad), "closed", "the Aspire Global shape");
   assert.equal(st("Unser Casino ist dauerhaft geschlossen. Danke fürs Mitspielen." + pad), "closed", "German, the site as subject");
   // the broad geo wording counts at the head of the page only, not in a lobby's footer disclaimer
   const lobby = (footer) => "Welcome to Example Casino. " + "Play slots, live dealer games and sports with fast payouts. ".repeat(40) + footer;

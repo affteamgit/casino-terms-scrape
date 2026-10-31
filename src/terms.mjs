@@ -16,6 +16,8 @@ export const TRACKER_HOSTS = /(^|\.)(casino\.guru|askgamblers\.com|lcb\.org)$/i;
 export const BLOCK_TEXT = new RegExp([
   "not (available|accessible) (in|from) your (country|region|location)", "access (is )?restricted", "restricted (country|region|territor)",
   "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
+  // a market exit ("no longer accepting players from Norway", "no longer accepting new registrations from the United Kingdom")
+  "no longer accept(s|ing)? (new )?((players|customers|registrations) )?from",
   "403 forbidden", "error 1020", "sorry, you have been blocked",
   "acesso bloqueado", "medida provisória", "fora do ar por determinação",
   "ограничение местоположения", "не можем принять игроков",
@@ -26,8 +28,11 @@ export const BLOCK_TEXT = new RegExp([
 export const BLOCK_TEXT_HEAD = /(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)|residing in your (country|location|jurisdiction)/i;
 // A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian,
 // Spanish. The subject is the site, never a bonus or an account: "no longer available" needs "this/our/the site|casino|service..." right before it
-// (or a domain-name headline), and "geschlossen" needs "dauerhaft/endgültig" or the site as its subject.
-export const CLOSED_TEXT = /\bclosed for business\b|\b(this|our|the) (site|website|casino|platform|service|domain|operations?) ((is|are|has|have) )?no longer (available|operating|accepting|in operation)\b|^\s*[\w-]{2,60}\.[a-z]{2,}\s+no longer available\b|\b(site|website|casino|platform) (is|has) (been )?(closed|discontinued)\b|\bceased (operations|trading)\b|\bpermanently closed\b|\bcessé ses activités\b|\b(dauerhaft|endgültig) geschlossen\b|\b(seite|website|casino|plattform) (ist|wurde) (\w+ )?geschlossen\b|\bchiuso definitivamente\b|\bcerrado permanentemente\b/i;
+// (or a domain-name headline), and "geschlossen" needs "dauerhaft/endgültig" or the site as its subject. `closed` is never
+// retried, so availability with a qualifier after it ("no longer available in your browser version", "no longer operating
+// in the UK") is not a closure, and a market exit ("no longer accepting players from Norway") is BLOCK_TEXT's.
+const UNQUALIFIED = String.raw`\b(?!\s+(in|on|for|to|from|via|through|with)\b)`;
+export const CLOSED_TEXT = new RegExp(String.raw`\bclosed for business\b|\b(this|our|the) (site|website|casino|platform|service|domain|operations?) ((is|are|has|have) )?no longer (available|operating|in operation)${UNQUALIFIED}|^\s*[\w-]{2,60}\.[a-z]{2,}\s+no longer available${UNQUALIFIED}|\b(site|website|casino|platform) (is|has) (been )?(closed|discontinued)\b|\bceased (operations|trading)\b|\bpermanently closed\b|\bcessé ses activités\b|\b(dauerhaft|endgültig) geschlossen\b|\b(seite|website|casino|plattform) (ist|wurde) (\w+ )?geschlossen\b|\bchiuso definitivamente\b|\bcerrado permanentemente\b`, "i");
 // An edge or WAF refusal page: Akamai "Access Denied / Reference #18.x", Incapsula "Incident ID", edgesuite, Slovak/Czech "request denied".
 export const WAF_TEXT = /access (is )?denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
 // A domain marketplace's host: whatever it serves (even its own error page) the domain is for sale.
@@ -38,23 +43,29 @@ const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenanc
 /**
  * What the first page says about reaching the casino. The checks run in this order: a domain marketplace's address,
  * a bot check (whatever the HTTP code: lumocasino answers 405 with "Human Verification"), a page that says the country
- * is blocked, an edge/WAF refusal, a short page that says the site has closed (`closed`; `not_casino` is Jev's alone,
+ * is blocked (or that the casino no longer accepts players from it), an edge/WAF refusal, a short page that says the site
+ * has closed (`closed`; `not_casino` is Jev's alone,
  * assigned elsewhere), a bare 403/451, a tracker that never redirected, a for-sale page, a maintenance page (`links`:
- * the page's anchors; a page with ten or more, or with a terms link on its own domain, is not one), and last an
- * error code or an empty page. Anything else is "ok".
+ * the page's anchors; a page with ten or more is not one), and last an error code or an empty page. A geo, closed or
+ * maintenance notice on a page that links its own terms (`links`: a candidate of score 5 or more on its domain) is a
+ * casino with a notice, "ok". Anything else is "ok".
  */
 export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] }) {
   if (isParkedUrl(finalUrl)) return "parked"; // a domain marketplace answers for it, whatever it says
   if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "challenge";
-  if (BLOCK_TEXT.test(text.slice(0, 5000)) || BLOCK_TEXT_HEAD.test(text.slice(0, 1500))) return "geo_blocked"; // the page says so
+  // A page that links its own terms (a candidate of score 5 or more on its domain) is a casino with a notice: its terms
+  // are read (Entain's help.<brand>.com/closed geo pages link them).
+  let own;
+  const ownTerms = () => (own ??= termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl)))));
+  if ((BLOCK_TEXT.test(text.slice(0, 5000)) || BLOCK_TEXT_HEAD.test(text.slice(0, 1500))) && !ownTerms()) return "geo_blocked"; // the page says so
   if (WAF_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "blocked_http"; // an edge refusal page, whatever the HTTP code
-  // A short page that says the site has ceased; a page that links its own terms is a casino with a notice.
-  if (text.length < 5000 && CLOSED_TEXT.test(text.slice(0, 3000)) && !termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl))))) return "closed";
+  // A short page that says the site has ceased.
+  if (text.length < 5000 && CLOSED_TEXT.test(text.slice(0, 3000)) && !ownTerms()) return "closed";
   if (httpStatus === 403 || httpStatus === 451) return "blocked_http"; // a bare 403/451: geo-block or bot wall, the page does not say
   if (TRACKER_HOSTS.test(host(finalUrl))) return "stuck_on_tracker";
   if (isParked(text)) return "parked"; // a for-sale page, not a casino
   // Maintenance is a bare page: a lobby with a "live casino under maintenance" banner has its links and its terms.
-  if (text.length < 3000 && MAINTENANCE_TEXT.test(text) && links.length < 10 && !termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl))))) return "maintenance";
+  if (text.length < 3000 && MAINTENANCE_TEXT.test(text) && links.length < 10 && !ownTerms()) return "maintenance";
   if (httpStatus >= 400 || text.length < 200) return "dead_or_empty";
   return "ok";
 }
