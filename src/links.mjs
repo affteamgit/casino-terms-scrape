@@ -61,10 +61,13 @@ const NOT_TERMS = new RegExp(String.raw`privacy|cookie|responsible|safer|affilia
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
 const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;
-// Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront). Other domains are never the terms:
-// a regulator's or a game provider's /terms must not win.
-export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net)$|^(cdn|static|files|assets|docs)\./i;
+// Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront, winner.ro's on b-cdn.net, ecasino.cz's on
+// imagekit.io, momangcasino.se's on cdn1.svenskaspel.net). Other domains are never the terms: a regulator's or a game
+// provider's /terms must not win.
+export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net|b-cdn\.net|imagekit\.io|cloudinary\.com|digitaloceanspaces\.com|azureedge\.net|akamaized\.net|fastly\.net)$|^(cdn\d*|static|files|assets|docs)\./i;
 export const isPdf = (u) => /\.pdf(\?|#|$)/i.test(u);
+/** A file document the scraper reads: a PDF (pdf.mjs) or a Word DOCX (docx.mjs). */
+export const isDoc = (u) => /\.(pdf|docx)(\?|#|$)/i.test(u);
 
 /** A web address's host, without www and lowercased; "" for another scheme (javascript:, chrome-error:) or no URL. */
 export const host = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.replace(/^www\./, "").toLowerCase() : ""; } catch { return ""; } };
@@ -136,20 +139,25 @@ export function regionalSites(links, pageUrl, country = "") {
 
 /**
  * A thin terms page that only says "use the link below to view or download the Terms of Use" (clubscasino.com):
- * the links on it that lead to the document. A PDF, or a link whose text says download, view, open or read, or names
- * the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
- * casino's own domain or a file host. PDFs and links that name the terms come first; at most two.
+ * the links on it that lead to the document. A PDF or DOCX, or a link whose text says download, view, open or read, or
+ * names the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
+ * casino's own domain or a file host. A PDF or Word file linked from a page on the casino's own domain (`own`: the
+ * casino's registrable domain, the page's own by default) counts whatever host serves it: the page vouches for it
+ * (winner.ro's hub -> a PDF on y6v9r7t5.b-cdn.net). PDFs and links that name the terms come first; at most two.
  */
-export function docLinks(links, pageUrl) {
-  const home = registrable(host(pageUrl)), seen = new Set();
-  const rank = (l) => (isPdf(l.href) ? 2 : 0) + (TERMS_PATH.test(path(l.href)) || TERMS_TEXT.test(l.text || "") ? 3 : 0);
+const FILE_DOC = /\.(pdf|docx?)(\?|#|$)/i;
+export function docLinks(links, pageUrl, own = registrable(host(pageUrl))) {
+  const home = registrable(host(pageUrl)), seen = new Set(), vouches = withinDomain(host(pageUrl), own);
+  // A document on the casino's own domain or a file host goes ahead of one on another host the page links.
+  const near = (l) => withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href));
+  const rank = (l) => (isDoc(l.href) ? 2 : 0) + (TERMS_PATH.test(path(l.href)) || TERMS_TEXT.test(l.text || "") ? 3 : 0) + (near(l) ? 1 : 0);
   return links.filter((l) => {
     if (!/^https?:/i.test(l.href) || isHome(l.href) || l.href === pageUrl || seen.has(l.href)) return false;
     const text = (l.text || "").trim(), name = path(l.href).split("/").filter(Boolean).pop() || "";
     // A verb alone ("Read more") is not enough: it has to lead to something shaped like a document.
     const verb = /\b(download|view|open|read)\b/i.test(text);
-    if (!(isPdf(l.href) || TERMS_TEXT.test(text) || (verb && (/\.(pdf|docx?)(\?|#|$)/i.test(l.href) || /(^|\/)(uploads?|files|docs|documents|static|media)(\/|$)/i.test(path(l.href)))))) return false;
-    if (!(withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href)))) return false;
+    if (!(isDoc(l.href) || TERMS_TEXT.test(text) || (verb && (FILE_DOC.test(l.href) || /(^|\/)(uploads?|files|docs|documents|static|media)(\/|$)/i.test(path(l.href)))))) return false;
+    if (!(near(l) || (vouches && FILE_DOC.test(l.href)))) return false;
     if (NOT_TERMS.test(text + " " + name) || PROMO.test(text + " " + name)) return false;
     seen.add(l.href);
     return true;

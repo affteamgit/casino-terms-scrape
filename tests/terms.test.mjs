@@ -1371,3 +1371,68 @@ test("otherDocsFor: the payments and KYC pages, none when Jev classified the lob
   assert.deepEqual(otherDocsFor(lobby, { href: "https://x.com/payments", lobbyClass: null }).map((d) => d.kind), ["kyc"]);
   assert.deepEqual(otherDocsFor(lobby, { href: "", lobbyClass: "not_casino" }), []);
 });
+
+// winner.ro / eliteslots.ro: the footer's terms page is a hub whose body is "Descarcă documentul" -> a PDF on a CDN host
+// (y6v9r7t5.b-cdn.net). The site here is 127.0.0.1 and the PDF is served under localhost: another host, no file host.
+test("a terms hub on the casino's own domain that links its PDF on another host: the PDF is found through the hop", async () => {
+  const pdf = termsPdf(), hits = [];
+  const server = createServer((req, res) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/documents/termsAndConditions/terms.pdf") {
+      hits.push(req.headers.host);
+      res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length });
+      return res.end(pdf);
+    }
+    const pages = {
+      "/": LOBBY(`<a href="/customer-support/terms-and-conditions">Terms and Conditions</a>`),
+      "/customer-support/terms-and-conditions": `<!doctype html><html><head><title>Terms &amp; Conditions</title></head><body><h1>Terms &amp; Conditions</h1><p><a href="http://localhost:${port}/documents/termsAndConditions/terms.pdf">Download the document</a></p></body></html>`,
+    };
+    res.writeHead(pages[u.pathname] ? 200 : 404, { "content-type": "text/html" });
+    res.end(pages[u.pathname] || "<html><body>Not found</body></html>");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      // Any other path on the site fails to load, so the guess phase is quick (the PDF itself is fetched from Node: CORS).
+      await page.route(`http://127.0.0.1:${port}/**`, (r) => (["/", "/customer-support/terms-and-conditions"].includes(new URL(r.request().url()).pathname) ? r.continue() : r.abort("aborted")));
+      await page.goto(`http://127.0.0.1:${port}/`);
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.href, `http://localhost:${port}/documents/termsAndConditions/terms.pdf`);
+      assert.equal(r.via, `http://127.0.0.1:${port}/customer-support/terms-and-conditions`);
+      assert.match(r.text, /General Terms and Conditions/);
+      assert.ok(hits.length >= 1 && hits.every((h) => h.startsWith("localhost")), hits.join(" "));
+    } finally { await browser.close(); server.close(); }
+  });
+});
+
+// The vouching is the casino's own page's: a page on another site (here a Jev pick on partner.test) that links its own PDF
+// does not make that PDF the casino's, so only Jev may accept it.
+test("a PDF that a page on another site links is Jev's alone", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), pdf = termsPdf();
+      const hub = `<!doctype html><html><head><title>Terms and Conditions</title></head><body><h1>Terms and Conditions</h1><p><a href="https://partner.test/docs/terms.pdf">Download the document</a></p></body></html>`;
+      await page.route(/^https:\/\/(casino|partner)\.test\//, (r) => {
+        const u = new URL(r.request().url());
+        if (u.host === "casino.test" && u.pathname === "/") return r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="https://partner.test/terms">Terms</a>`) });
+        if (u.host === "partner.test" && u.pathname === "/terms") return r.fulfill({ status: 200, contentType: "text/html", body: hub });
+        if (u.host === "partner.test" && u.pathname === "/docs/terms.pdf") return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf });
+        return r.abort("aborted");
+      });
+      const search = async (accept, log = []) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "partner.test/terms", accept, log }) }); };
+      const log = [];
+      const no = await search(() => false, log);
+      assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+      assert.ok(no.tried.includes("https://partner.test/docs/terms.pdf (pdf not terms-like)"), no.tried.join(" | "));
+      assert.ok(log.includes("page"), "Jev judged the PDF");
+      const yes = await search((p) => /\.pdf$/.test(p.url));
+      assert.equal(yes.pdf, true, yes.tried.join(" | "));
+      assert.equal(yes.href, "https://partner.test/docs/terms.pdf");
+    } finally { await browser.close(); }
+  });
+});

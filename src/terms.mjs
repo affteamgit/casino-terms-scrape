@@ -1,6 +1,6 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, otherDocs, FILE_HOST, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, isDoc, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, otherDocs, FILE_HOST, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
 import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, exclusionQuestion, acceptsPage, acceptsBorderline, pageSummary, PAGE_NOUL_BORDER, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
@@ -470,9 +470,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // a page a click navigated to.
   const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText) && !hiddenShell(t);
   // A document on another site (a tab a click opened, a frame) is Jev's alone: the pattern accepts only the casino's own
-  // pages and its file hosts ("" is a frame with no URL of its own: about:blank, srcdoc).
+  // pages and its file hosts ("" is a frame with no URL of its own: about:blank, srcdoc). A PDF or Word file a page on the
+  // casino's own domain links (`from`: the page a hop took it from) is the casino's whatever host serves it: the page
+  // vouches for it (winner.ro's terms hub -> a PDF on b-cdn.net).
   const ownDomain = registrable(host(lobby.url));
-  const ownUrl = (u) => u === "" || withinDomain(host(u), ownDomain) || FILE_HOST.test(host(u));
+  const ownUrl = (u, from = "") => u === "" || withinDomain(host(u), ownDomain) || FILE_HOST.test(host(u)) || (!!from && isDoc(u) && withinDomain(host(from), ownDomain));
   const elsewhere = { fast: false, jevOnly: true };
   let cands = termsCandidates(lobby.links, lobby.url);
   // Jev reads the footer once: its picks (when it is confident a terms link exists) go ahead of the scored anchors.
@@ -577,10 +579,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     if (body.length > MAX_PDF) throw new Error("over 20 MB");
     return body;
   };
+  // A document a hop took from a page (`c.from`) on another site than the casino's, served from that site, is Jev's alone.
   const tryPdf = async (c) => {
     try {
       const text = await pdfText(await pdfBytes(c.href));
-      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, judging(c));
+      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, c.from && !ownUrl(c.href, c.from) ? elsewhere : judging(c));
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };
       tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
@@ -599,8 +602,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     const from = page.url(), meta = await pageMeta();
     if (!TERMS_TEXT.test([meta.title, ...meta.headings].join(" "))) return null;
     const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.title || "").trim().slice(0, 80) }))).catch(() => []);
-    // A page this search has already read (the shell's own footer link back to a candidate) reads the same again.
-    const docs = docLinks(links, from).filter((l) => !hoppedDocs.has(l.href) && !visited.has(l.href));
+    // A page this search has already read (the shell's own footer link back to a candidate) reads the same again. A page
+    // on the casino's own domain vouches for a PDF or Word file it links on any host; each document keeps where it was found.
+    const docs = docLinks(links, from, ownDomain).filter((l) => !hoppedDocs.has(l.href) && !visited.has(l.href)).map((l) => ({ ...l, from }));
     dbg("hop", from, docs.map((l) => `${l.href} "${l.text}"`).join(" | ") || "no document link");
     if (!docs.length) return null;
     hopsLeft--;
