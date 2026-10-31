@@ -424,8 +424,8 @@ test("a guessed path that serves the lobby shell is not the terms, even when its
     const page = await browser.newPage();
     await page.route("https://casino.test/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: SHELL }));
     await page.goto("https://casino.test/");
-    const lobby = await readLobby(page, { quietMs: 2000 });
-    const r = await fetchTerms(page, lobby);
+    const read = await readLobby(page, { quietMs: 2000 });
+    const r = await fetchTerms(page, read);
     assert.equal(r.text, "", `accepted ${r.href}`);
     assert.ok(r.tried.some((t) => /sitemap\/guessed paths/.test(t)));
   } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
@@ -822,11 +822,15 @@ test("a stub that shows the lobby with a link to the terms document is hopped fr
 
 // A lobby whose header and footer read like terms on their own (the footer's SEO block and its "Terms and Conditions"
 // link hold 8 terms words), and pages under the same header and footer: the shell alone passes readsLikeTerms.
-const CHROME = (main, end = "") => `<!doctype html><html><body>${HEADER}<main>${main}</main><footer><a href="/terms.html">Terms and Conditions</a>${ELARA_SEO}</footer>${end}</body></html>`;
+// `menu`: the lobby's header (HEADER), or the same links in a plain <div class="menu"> (DIV_MENU), which the hidden text
+// keeps: hiddenTextInPage strips only header, nav and footer.
+const CHROME = (main, end = "", menu = HEADER) => `<!doctype html><html><body>${menu}<main>${main}</main><footer><a href="/terms.html">Terms and Conditions</a>${ELARA_SEO}</footer>${end}</body></html>`;
 const CHROME_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`);
+const DIV_MENU = HEADER.replace("<header><nav>", '<div class="menu">').replace("</nav></header>", "</div>");
+const DIV_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`, "", DIV_MENU);
 const GENERALS = (n) => Array.from({ length: n }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("");
 const INTRO = `<h1>Terms and Conditions</h1><p>${"Please read these terms carefully before you play. ".repeat(6)}</p>`;
-// `terms`: the HTML /terms.html serves; `lobby`: the HTML / serves. The search runs without Jev.
+// `terms`: the HTML /terms.html serves; `lobby`: the HTML / serves. The search runs without Jev; `ms` is how long it took.
 const searchChrome = (terms, lobby = CHROME_LOBBY) => withoutJev(async () => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
@@ -835,7 +839,10 @@ const searchChrome = (terms, lobby = CHROME_LOBBY) => withoutJev(async () => {
     await page.goto("https://casino.test/");
     const lobbyText = await page.evaluate(() => document.body.innerText);
     assert.ok(readsLikeTerms(lobbyText), "the lobby's own chrome reads like terms");
-    return await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+    const read = await readLobby(page, { quietMs: 2000 });
+    const t0 = Date.now();
+    const r = await fetchTerms(page, read);
+    return { ...r, ms: Date.now() - t0 };
   } finally { await browser.close(); }
 });
 
@@ -894,6 +901,22 @@ test("an accordion under the lobby's chrome whose sections open on an aria-expan
   assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
   assert.match(r.text, /10\. These terms and conditions govern/);
   assert.ok(!r.hidden, "read from the opened sections, not the hidden text");
+});
+
+test("under a <div> menu that the hidden text keeps, a hidden terms document is still the terms (not the lobby's hidden shell)", async () => {
+  assert.ok(DIV_MENU.replace(/<[^>]+>/g, "").length >= 600, "a menu of 600 characters or more");
+  const r = await searchChrome(CHROME(INTRO + `<div hidden>${GENERALS(11)}</div>`, "", DIV_MENU), DIV_LOBBY);
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.equal(r.hidden, true);
+  assert.match(r.text, /11\. These terms and conditions govern/);
+});
+
+test("under a <div> menu that the hidden text keeps, a document that arrives 4 s after the shell is read when it arrives, not at the budget", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", late, DIV_MENU), DIV_LOBBY);
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.ok(r.ms < 20000, `took ${r.ms} ms`);
 });
 
 // A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.

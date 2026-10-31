@@ -537,7 +537,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     const from = page.url(), meta = await pageMeta();
     if (!TERMS_TEXT.test([meta.title, ...meta.headings].join(" "))) return null;
     const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || a.title || "").trim().slice(0, 80) }))).catch(() => []);
-    const docs = docLinks(links, from).filter((l) => !hoppedDocs.has(l.href));
+    // A page this search has already read (the shell's own footer link back to a candidate) reads the same again.
+    const docs = docLinks(links, from).filter((l) => !hoppedDocs.has(l.href) && !visited.has(l.href));
     dbg("hop", from, docs.map((l) => `${l.href} "${l.text}"`).join(" | ") || "no document link");
     if (!docs.length) return null;
     hopsLeft--;
@@ -594,8 +595,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
     // The lobby's hidden text starts at its <main>, which often changes from one load to the next (a ticker, "N players
     // online", shuffled tiles), so its opening alone does not recognise it: it is also the lobby's when it adds under
-    // 1,500 characters to the lobby's hidden text (coreText) or is within 5% of its length (sameAsLobby).
-    const hiddenShell = (t) => isShellOf(t, lobbyHidden, lobbyHiddenText) || coreText(t, lobbyHiddenText).length < 1500 || sameAsLobby(t, lobbyHidden);
+    // 1,500 characters to the lobby's hidden text (coreText) or is within 5% of its length. Not sameAsLobby: its
+    // same-first-500-characters rule makes every page's hidden text the lobby's on a site whose menu is a plain <div>
+    // (the hidden text keeps it: only header, nav and footer are stripped).
+    const hiddenShell = (t) => isShellOf(t, lobbyHidden, lobbyHiddenText) || coreText(t, lobbyHiddenText).length < 1500
+      || (lobbyHidden.len > 0 && Math.abs(t.length - lobbyHidden.len) <= lobbyHidden.len * 0.05);
     const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && hiddenShell(d.text));
     // A snapshot that is still the lobby shell is not the document yet, even when the lobby's own words read like terms:
     // the page may render its chrome first and the document seconds later (pokerstars), so the read goes on until the
