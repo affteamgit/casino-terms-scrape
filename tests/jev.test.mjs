@@ -229,6 +229,21 @@ test("askJev: 429 and every 5xx are retried", async () => {
   } finally { delete process.env.TYPESAFE_API_KEY; }
 });
 
+test("askJev: a 5xx whose body cannot be read is still retried, and the error keeps the `jev http <status>:` form", async () => {
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    const unreadable = (status) => ({ ...reply(status), text: async () => { throw new TypeError("terminated"); } });
+    const { fetch, calls } = sequence(unreadable(502), reply(200, "", { answers: { ok: { type: "noul", noul: 1 } } }));
+    const { sleep, delays } = recorder();
+    assert.deepEqual(await askJev({}, {}, { fetch, sleep }), { ok: { type: "noul", noul: 1 } });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(delays, [2000]);
+    const all = sequence(unreadable(503));
+    await assert.rejects(askJev({}, {}, { fetch: all.fetch, sleep }), (e) => { assert.equal(e.message, "jev http 503: "); return true; });
+    assert.equal(all.calls.length, 4);
+  } finally { delete process.env.TYPESAFE_API_KEY; }
+});
+
 test("askJev: a retry-after of up to 30 s replaces the schedule's wait for that attempt; a longer or unreadable one does not", async () => {
   process.env.TYPESAFE_API_KEY = "test-key";
   try {
@@ -298,7 +313,7 @@ test("termsPageQuestion: a product section's terms on a site with other products
   assert.match(q.questions.is_terms.criteria.true, /general terms and conditions, terms of service, terms of use or user agreement/, "true is unchanged");
 });
 
-test("lobbyQuestion: URL, title, the first 3,000 characters and up to 60 captions go to a single Choice with the six options", () => {
+test("lobbyQuestion: URL, title, the first 3,000 characters and up to 60 captions go to a single Choice with the seven options", () => {
   const captions = Array.from({ length: 80 }, (_, i) => `Caption ${i} ${"x".repeat(100)}`);
   const { state, questions } = lobbyQuestion({ url: "https://x.example/", title: "Best Casinos 2026", text: "a".repeat(5000), captions });
   assert.equal(state.page.url, "https://x.example/");
@@ -309,7 +324,11 @@ test("lobbyQuestion: URL, title, the first 3,000 characters and up to 60 caption
   assert.deepEqual(Object.keys(questions), ["kind"]);
   assert.match(questions.kind.instructions, /not from the domain name/);
   assert.equal(questions.kind.type, "choice");
-  assert.deepEqual(Object.keys(questions.kind.criteria), ["gambling_site", "geo_or_regulatory_notice", "closed_or_suspended", "parked_or_for_sale", "not_gambling_site", "error_or_bot_wall"]);
+  assert.deepEqual(Object.keys(questions.kind.criteria), ["gambling_site", "geo_or_regulatory_notice", "closed_or_suspended", "temporarily_unavailable", "parked_or_for_sale", "not_gambling_site", "error_or_bot_wall"]);
+  // closed is terminal (never retried): the option says permanent, and the temporary states have their own option
+  assert.match(questions.kind.criteria.closed_or_suspended, /permanently/);
+  assert.match(questions.kind.criteria.closed_or_suspended, /not a temporary outage, maintenance or a licence suspension/);
+  assert.match(questions.kind.criteria.temporarily_unavailable, /maintenance/);
 });
 
 test("lobbyVerdict: the top option at 0.8 with confidence 0.7 becomes a status; a gambling site, an unsure answer or no answer is null", () => {
@@ -320,6 +339,7 @@ test("lobbyVerdict: the top option at 0.8 with confidence 0.7 becomes a status; 
   assert.equal(lobbyVerdict(kind("closed_or_suspended", 0.8)), "closed");
   assert.equal(lobbyVerdict(kind("parked_or_for_sale", 0.9)), "parked");
   assert.equal(lobbyVerdict(kind("error_or_bot_wall", 0.9)), "blocked_http");
+  assert.equal(lobbyVerdict(kind("temporarily_unavailable", 0.9)), "maintenance", "a temporary state is not terminal");
   assert.equal(lobbyVerdict(kind("not_gambling_site", 0.7)), null, "probability below 0.8");
   assert.equal(lobbyVerdict(kind("not_gambling_site", 0.92, 0.5)), null, "confidence below 0.7");
   assert.equal(lobbyVerdict({ kind: { type: "choice", choice: "not_gambling_site", confidence: 0.99, probabilities: { gambling_site: 0.01, geo_or_regulatory_notice: 0, closed_or_suspended: 0, parked_or_for_sale: 0, not_gambling_site: 0.99, error_or_bot_wall: 0 } } }), "not_casino", "the live answer for an affiliate site");

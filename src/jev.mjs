@@ -63,7 +63,8 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetch: f = g
       throw err;
     }
     if (!res.ok) {
-      const err = new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
+      // A body that cannot be read (a 5xx cut off mid-stream) still leaves the call in the retry path.
+      const err = new Error(`jev http ${res.status}: ${clip(await res.text().catch(() => ""), 200)}`);
       if (retryable(res.status) && i < RETRY_DELAYS.length) { asked = retryAfter(res); continue; }
       throw err;
     }
@@ -205,8 +206,9 @@ export const pageSummary = (answers, exclusion) => answers ? `page:${fmt(answers
 
 export const LOBBY_P_MIN = 0.8; // the top lobby option must be this likely ...
 export const LOBBY_CONFIDENCE_MIN = 0.7; // ... and the answer's confidence this high, before a lobby is given a status
-// option -> the status it gives; `gambling_site` gives none
-const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
+// option -> the status it gives; `gambling_site` gives none. `closed` is terminal (never retried), so it is given only for
+// a permanent closure; a temporary outage, maintenance or a suspension gives `maintenance`, which is retried.
+const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", temporarily_unavailable: "maintenance", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
 
 /**
  * The lobby judgment, asked when the lobby offers no terms link or clickable: what is this page. `captions` are the
@@ -223,7 +225,8 @@ export function lobbyQuestion({ url, title, text, captions }) {
         criteria: {
           gambling_site: "an online casino, sportsbook, poker, bingo or lottery operator's own site, whatever its language",
           geo_or_regulatory_notice: "a notice that the service is not offered in the visitor's country or region, or is blocked by a regulator",
-          closed_or_suspended: "a notice that the site has closed, ceased operating or been suspended",
+          closed_or_suspended: "a notice that the site has permanently closed or ceased operating — not a temporary outage, maintenance or a licence suspension",
+          temporarily_unavailable: "a notice that the site is temporarily unavailable: maintenance, a temporary outage or suspension, 'try again later'",
           parked_or_for_sale: "a parked domain or a domain for sale",
           not_gambling_site: "an affiliate, review, comparison or news site, a blog, a template or placeholder page, or a software vendor's page, not an operator's own site",
           error_or_bot_wall: "an error page, an access-denied page or a bot or human-verification wall",
@@ -233,7 +236,7 @@ export function lobbyQuestion({ url, title, text, captions }) {
   };
 }
 
-/** The status a confident lobby answer gives: "geo_blocked", "closed", "parked", "not_casino", "blocked_http"; null for a gambling site, an unsure answer or none. */
+/** The status a confident lobby answer gives: "geo_blocked", "closed", "maintenance", "parked", "not_casino", "blocked_http"; null for a gambling site, an unsure answer or none. */
 export function lobbyVerdict(answers) {
   const a = answers?.kind;
   if (!a || !((a.confidence ?? a.noul) >= LOBBY_CONFIDENCE_MIN) || !a.probabilities || typeof a.probabilities !== "object") return null;
