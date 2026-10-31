@@ -820,6 +820,53 @@ test("a stub that shows the lobby with a link to the terms document is hopped fr
   });
 });
 
+// A lobby whose header and footer read like terms on their own (the footer's SEO block and its "Terms and Conditions"
+// link hold 8 terms words), and pages under the same header and footer: the shell alone passes readsLikeTerms.
+const CHROME = (main, end = "") => `<!doctype html><html><body>${HEADER}<main>${main}</main><footer><a href="/terms.html">Terms and Conditions</a>${ELARA_SEO}</footer>${end}</body></html>`;
+const CHROME_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`);
+const GENERALS = (n) => Array.from({ length: n }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("");
+const INTRO = `<h1>Terms and Conditions</h1><p>${"Please read these terms carefully before you play. ".repeat(6)}</p>`;
+// `terms`: the HTML /terms.html serves; the search runs without Jev.
+const searchChrome = (terms) => withoutJev(async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await site(page, { "/": CHROME_LOBBY, "/terms.html": terms });
+    await page.goto("https://casino.test/");
+    const lobbyText = await page.evaluate(() => document.body.innerText);
+    assert.ok(readsLikeTerms(lobbyText), "the lobby's own chrome reads like terms");
+    return await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+  } finally { await browser.close(); }
+});
+
+test("a terms page that shows the lobby's header and footer first and its document 4 s later is read once the document arrives", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", late));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /1\. These terms and conditions govern/);
+  assert.ok(r.text.length >= 4000);
+});
+
+test("a terms page under the lobby's chrome whose 60,000 characters sit in closed <details> is read", async () => {
+  const parts = Array.from({ length: 10 }, (_, k) => `<details><summary>Part ${k + 1}</summary>${GENERALS(14)}</details>`).join("");
+  const r = await searchChrome(CHROME(INTRO + parts));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.ok(r.text.length >= 60000, `${r.text.length} chars`);
+});
+
+test("a shell whose hidden document is shorter than three times the visible chrome yields the hidden text, judged as the terms", async () => {
+  const r = await searchChrome(CHROME(INTRO + `<div hidden>${GENERALS(11)}</div>`));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.equal(r.hidden, true);
+  assert.match(r.text, /11\. These terms and conditions govern/);
+});
+
+test("a 404 page that is the lobby's chrome around a 'not found' line is still the lobby shell", async () => {
+  const r = await searchChrome(CHROME(`<h1>Page not found</h1><p>${"Sorry, this page could not be found. ".repeat(5)}</p>`));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
 // A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.
 const NO_LINKS_LOBBY = LOBBY(`<a href="/about">About us</a><a href="/blog">Blog</a>`);
 const lobbyAsk = ({ option = "not_gambling_site", p = 0.9, confidence = 0.9, log = [], seen = [] } = {}) => async (state, questions) => {

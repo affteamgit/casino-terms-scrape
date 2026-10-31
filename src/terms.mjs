@@ -590,33 +590,49 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
     if (/application\/pdf/i.test((resp && resp.headers()["content-type"]) || "")) return tryPdf({ ...c, href: page.url() });
-    let d = await readDoc(page, c.english ? 15000 : 35000, readsLikeTerms); // BangaWin bounces through an auth callback for ~20 s before the text arrives
+    // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
+    // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
+    const shell = (d) => isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText));
+    // A snapshot that is still the lobby shell is not the document yet, even when the lobby's own words read like terms:
+    // the page may render its chrome first and the document seconds later (pokerstars), so the read goes on until the
+    // budget. The same `want` decides when readDoc falls back to the hidden text and to a frame's text.
+    const want = (t) => readsLikeTerms(t) && !isShellOf(t, lobbyRef, lobbyText);
+    let d = await readDoc(page, c.english ? 15000 : 35000, want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
     // /en/terms-and-conditions is a 404 page), kept its /en segment and is not the lobby again.
     if (c.english && ((resp && resp.status() >= 400) || !/^\/en(-[a-z]{2})?(\/|$)/i.test(new URL(page.url()).pathname) || isLobby(d.text))) { tried.push(`${c.href} (english variant not found)`); return null; }
-    // Any candidate an app routes to its shell shows the lobby again, or offers the lobby's hidden text: not a document.
-    // isShellOf, not isLobby: a real terms page may open with the lobby's header (isLobby stays for guesses and variants).
-    // A strong candidate may show the shell because the blocklist broke its app: it gets the unblocked retry first.
-    if (isShellOf(d.text, lobbyRef, lobbyText) || (d.hidden && isShellOf(d.text, lobbyHidden, lobbyHiddenText))) {
-      tried.push(`${c.href} (lobby shell)`);
-      // The unblocked retry's result stands; otherwise a stub under the lobby's header that links its document
-      // (clubscasino's terms page) is still hopped from.
-      const r = await retryUnblocked(c);
-      return r !== undefined ? r : (await hopFrom(d)) || null;
+    // A page that is not the shell is judged as the terms. `expanded`: its collapsed sections were opened already.
+    const judge = async (d, expanded = false) => {
+      if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
+      // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
+      // collapsed section and read again.
+      if (!expanded && (!d.ok || !readsLikeTerms(d.text))) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
+      const good = d.ok && await isTermsPage(d.text, await pageMeta(), { jevOnly: jevOnly(c) });
+      dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
+      if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, frame: !!d.frame, tried });
+      tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
+      // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
+      // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
+      if (d.note !== "wall") { const r = await retryUnblocked(c); if (r !== undefined) return r; }
+      // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
+      return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
+    };
+    if (!shell(d)) return judge(d);
+    // Still the shell when the budget ran out. The document may be collapsed or hidden under the lobby's chrome
+    // (campobet: 285,000 hidden characters): its sections are opened and the page read once more; then its hidden text,
+    // when it is not the lobby's own and reads like terms, is judged as the terms.
+    if (await expandSections(page)) { d = await readDoc(page, 10000, want); if (!shell(d)) return judge(d, true); }
+    const h = await page.evaluate(hiddenTextInPage).catch(() => "");
+    if (h && !isShellOf(h, lobbyHidden, lobbyHiddenText) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), { fast: !jevOnly(c), jevOnly: jevOnly(c) })) {
+      dbg("link", c.href, `ok ${h.length} hidden chars under the lobby shell`);
+      return fuller({ href: page.url(), text: h, via: c.jev ? "jev" : "link", hidden: true, tried });
     }
-    if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
-    // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
-    // collapsed section and read again.
-    if (!d.ok || !readsLikeTerms(d.text)) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
-    const good = d.ok && await isTermsPage(d.text, await pageMeta(), { jevOnly: jevOnly(c) });
-    dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
-    if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, frame: !!d.frame, tried });
-    tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
-    // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
-    // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
-    if (d.note !== "wall") { const r = await retryUnblocked(c); if (r !== undefined) return r; }
-    // An invented /en/ variant is not the casino's page: it is neither hopped from nor read as a hub.
-    return (await hopFrom(d)) || (c.english ? null : hubFrom(d));
+    tried.push(`${c.href} (lobby shell)`);
+    // A strong candidate may show the shell because the blocklist broke its app: it gets the unblocked retry, and its
+    // result stands; otherwise a stub under the lobby's header that links its document (clubscasino's terms page) is
+    // still hopped from.
+    const r = await retryUnblocked(c);
+    return r !== undefined ? r : (await hopFrom(d)) || null;
   };
   // A click that opened a new tab (wildcasino.ag's help centre): the tab is the document, read and judged as a navigated
   // page under its own URL, and closed whatever it held. The lobby page is not touched meanwhile. A tab whose URL is a
