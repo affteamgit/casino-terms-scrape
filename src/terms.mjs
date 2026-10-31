@@ -17,13 +17,17 @@ export const BLOCK_TEXT = new RegExp([
   "not (available|accessible) (in|from) your (country|region|location)", "access (is )?restricted", "restricted (country|region|territor)",
   "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
   "403 forbidden", "error 1020", "sorry, you have been blocked",
-  "(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)", "residing in your (country|location|jurisdiction)",
   "acesso bloqueado", "medida provisória", "fora do ar por determinação",
   "ограничение местоположения", "не можем принять игроков",
-  "no está disponible en (tu|su) (país|región)", "in Ihrem Land nicht verfügbar", "pas disponible dans votre pays", "non disponibile nel tuo paese", "ülkenizde kullanılamıyor",
+  "no está disponible en (tu|su) (país|región)", "in Ihrem Land nicht verfügbar", "pas disponible dans votre pays", "non (è )?disponibile nel (tuo|suo|vostro) paese", "ülkenizde kullanılamıyor",
 ].join("|"), "i");
-// A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian, Spanish.
-export const CLOSED_TEXT = /closed for business|no longer (available|operating|accepting|in operation)|has (been )?(closed|discontinued)|ceased (operations|trading)|permanently closed|site (is|has) closed|cessé ses activités|geschlossen|chiuso definitivamente|cerrado permanentemente/i;
+// The two broad English notice forms ("services are not being offered to players residing in your location" (888)): a notice
+// page opens with them, while a lobby's footer disclaimer ("some promotions are not offered in your country") sits at the end.
+export const BLOCK_TEXT_HEAD = /(not|no longer) (being )?(available|offered|accessible)[^.]{0,80}(your|this) (location|country|region|jurisdiction)|residing in your (country|location|jurisdiction)/i;
+// A short page that says the site has ceased (europacasino.com "closed for business"), in English, French, German, Italian,
+// Spanish. The subject is the site, never a bonus or an account: "no longer available" needs site/casino/service/we before it
+// (or a domain-name headline), and "geschlossen" needs "dauerhaft/endgültig" or the site as its subject.
+export const CLOSED_TEXT = /\bclosed for business\b|\b(site|website|casino|platform|service|services|domain|operations?|we)\b[^.\n]{0,30}\bno longer (available|operating|accepting|in operation)\b|^\s*[\w-]{2,60}\.[a-z]{2,}\s+no longer available\b|\b(site|website|casino|platform) (is|has) (been )?(closed|discontinued)\b|\bceased (operations|trading)\b|\bpermanently closed\b|\bcessé ses activités\b|\b(dauerhaft|endgültig) geschlossen\b|\b(seite|website|casino|plattform) (ist|wurde) (\w+ )?geschlossen\b|\bchiuso definitivamente\b|\bcerrado permanentemente\b/i;
 // An edge or WAF refusal page: Akamai "Access Denied / Reference #18.x", Incapsula "Incident ID", edgesuite, Slovak/Czech "request denied".
 export const WAF_TEXT = /access (is )?denied|request (was )?(blocked|rejected)|reference #\d|incident id|errors\.edgesuite\.net|zamietnut|zamítnut/i;
 // A domain marketplace's host: whatever it serves (even its own error page) the domain is for sale.
@@ -42,7 +46,7 @@ const MAINTENANCE_TEXT = /under maintenance|maintenance mode|down for maintenanc
 export function lobbyStatus({ text, httpStatus = 0, finalUrl = "", links = [] }) {
   if (isParkedUrl(finalUrl)) return "parked"; // a domain marketplace answers for it, whatever it says
   if (CHALLENGE_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "challenge";
-  if (BLOCK_TEXT.test(text.slice(0, 5000))) return "geo_blocked"; // the page says so
+  if (BLOCK_TEXT.test(text.slice(0, 5000)) || BLOCK_TEXT_HEAD.test(text.slice(0, 1500))) return "geo_blocked"; // the page says so
   if (WAF_TEXT.test(text.slice(0, 2000)) && text.length < 3000) return "blocked_http"; // an edge refusal page, whatever the HTTP code
   // A short page that says the site has ceased; a page that links its own terms is a casino with a notice.
   if (text.length < 5000 && CLOSED_TEXT.test(text.slice(0, 3000)) && !termsCandidates(links, finalUrl).some((c) => c.score >= 5 && withinDomain(host(c.href), registrable(host(finalUrl))))) return "closed";

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -290,7 +290,7 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   assert.equal(st("Dieses Angebot ist leider in Ihrem Land nicht verfügbar." + pad), "geo_blocked", "German");
   assert.equal(st("Ce site n'est pas disponible dans votre pays." + pad), "geo_blocked", "French");
   assert.equal(st("Este sitio no está disponible en tu país." + pad), "geo_blocked", "Spanish");
-  assert.equal(st("Questo sito non disponibile nel tuo paese." + pad), "geo_blocked", "Italian");
+  assert.equal(st("Questo sito non è disponibile nel tuo paese." + pad), "geo_blocked", "Italian");
   assert.equal(st("Bu site ülkenizde kullanılamıyor." + pad), "geo_blocked", "Turkish");
   // a site that says it has shut down (europacasino)
   assert.equal(st("EUROPACASINO.COM NO LONGER AVAILABLE Sorry! Europacasino.com is now closed for business. For further information please contact support." + pad), "closed");
@@ -299,6 +299,16 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   const lobbyLinks = [{ href: "https://casino.example/terms-and-conditions", text: "Terms and Conditions", footer: true }];
   assert.equal(lobbyStatus({ text: "Our sportsbook is closed for business on Sundays. " + pad, finalUrl: "https://casino.example/", links: lobbyLinks }), "ok");
   assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "The old lobby has been closed for business."), "ok", "a long lobby that mentions it");
+  // false terminal statuses: a registration step, a bonus line or an account notice is not a closed site
+  assert.equal(st("Registrierung abgeschlossen. Vielen Dank, Ihr Konto wurde angelegt." + pad), "ok", "abgeschlossen is not geschlossen");
+  assert.equal(st("Welcome to Example Casino. This bonus is no longer available. Pick another offer below." + pad), "ok", "a promo line");
+  assert.equal(st("Welcome back. Your account has been closed at your request. Open a new one below." + pad), "ok", "an account notice");
+  assert.equal(st("Unser Casino ist dauerhaft geschlossen. Danke fürs Mitspielen." + pad), "closed", "German, the site as subject");
+  // the broad geo wording counts at the head of the page only, not in a lobby's footer disclaimer
+  const lobby = (footer) => "Welcome to Example Casino. " + "Play slots, live dealer games and sports with fast payouts. ".repeat(40) + footer;
+  assert.ok(lobby("").length > 1500 && lobby("").length < 5000);
+  assert.equal(st(lobby("Some promotions are not offered in your country.")), "ok", "footer disclaimer");
+  assert.equal(st(lobby("Open to players residing in your country if licensed.")), "ok", "footer disclaimer, residing");
   // an Akamai-style refusal in Slovak: "URL ... zamietnutá", with a support ID
   assert.equal(st("Požadovaná URL adresa bola zamietnutá. Kontaktujte prosím IT podporu. Vaše ID pre podporu je: <678628845435775204>"), "blocked_http");
   assert.equal(st("The request was blocked. Incident ID: 1234-5678" + pad), "blocked_http", "Incapsula-style");
@@ -311,7 +321,7 @@ test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals 
   // an ordinary lobby with the terms in its footer is untouched
   assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(20) + "Terms and Conditions | Privacy Policy | Responsible Gaming"), "ok");
   assert.ok(CLOSED_TEXT.test("closed for business") && WAF_TEXT.test("Reference #18") && MARKETPLACE_HOSTS.test("forsale.godaddy.com") && !MARKETPLACE_HOSTS.test("evildan.com"));
-  assert.ok(BLOCK_TEXT.test("residing in your jurisdiction"));
+  assert.ok(BLOCK_TEXT_HEAD.test("residing in your jurisdiction") && !BLOCK_TEXT.test("residing in your jurisdiction"));
 });
 
 test("notCasino: a review site that says how it rates casinos (masterplay.io)", () => {
