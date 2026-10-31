@@ -670,6 +670,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       tried.push(`${c.href} (${clip(e.message, 60)})`); return null;
     }
     if (/application\/pdf|officedocument\.wordprocessingml/i.test((resp && resp.headers()["content-type"]) || "")) return tryFile({ ...c, href: page.url() });
+    // A cookie wall can be all a candidate page shows until consent is given (69games.cz: only the Cookiebot text).
+    if (await dismissCookies(page)) await sleep(1500);
     // The invented /en/ variant is read without `want`: isLobby rejects a shell below anyway, so waiting on it gains nothing.
     let d = await readDoc(page, c.english ? 15000 : 35000, c.english ? readsLikeTerms : want); // BangaWin bounces through an auth callback for ~20 s before the text arrives
     // The /en/ variant is invented, not a link the casino gave: it counts only when it answered (no 4xx/5xx: wantedwin's
@@ -678,6 +680,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // A page that is not the shell is judged as the terms. `expanded`: its collapsed sections were opened already.
     const judge = async (d, expanded = false) => {
       if (d.note === "wall" && !hopping && !c.english) pageWalled = true; // the invented /en/ variant says nothing: the original URL decides
+      // A consent dialog a script added after the page loaded: dismissed now, and the page read again.
+      if (!expanded && (!d.ok || !readsLikeTerms(d.text)) && await dismissCookies(page)) { await sleep(1500); d = await readDoc(page, 10000, c.english ? readsLikeTerms : want); }
       // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
       // collapsed section and read again.
       if (!expanded && (!d.ok || !readsLikeTerms(d.text))) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
@@ -720,6 +724,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const readPopup = async (np, target, at, hub) => {
     try {
       await np.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+      if (await dismissCookies(np)) await sleep(1500);
       if (isDoc(np.url())) { const r = await tryFile({ ...target, href: np.url(), elsewhere: !ownUrl(np.url()) }); return r ? { r: { ...r, via: "click" } } : { navigated: false, d: { ok: false, text: "" } }; }
       const d = await readDoc(np, 35000, want), url = np.url();
       dbg("click", target.text, "opened a tab", url, d.text.length, "chars");
@@ -877,6 +882,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       if (Date.now() > guessUntil) { if (!budgetNoted) tried.push("guessing stopped at the time budget"); budgetNoted = true; return null; }
       guessed.add(href);
       try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
+      if (await dismissCookies(page)) await sleep(1500);
       const d = await readDoc(page, 8000, readsLikeTerms);
       if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
       // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text (or hidden text) again and passes

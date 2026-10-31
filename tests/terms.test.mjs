@@ -1473,3 +1473,53 @@ test("lobbyStatus: an unauthorised-country or turn-off-your-VPN notice is geo_bl
   assert.equal(lobbyStatus({ text: lobby, finalUrl: "https://x.com/" }), "ok");
   assert.equal(lobbyStatus({ text: "Our VPN-friendly lobby: all games are open to every authorized player. " + "Play slots and live games every day. ".repeat(40), finalUrl: "https://x.com/" }), "ok", "no instruction to turn a VPN off");
 });
+
+// 69games.cz: the terms page shows only the consent banner's text (1,496 characters) until consent is given. Here the
+// banner covers a page that renders the document only once "Accept all" is clicked.
+const CONSENT_PAGE = (late = false) => {
+  const doc = JSON.stringify(`<h1>Terms and Conditions</h1>${GENERALS(12)}`);
+  const banner = `<div class="cookie-consent" id="cc"><p>${"This website uses cookies to give you the best experience and to measure traffic. ".repeat(8)}</p><button onclick="document.getElementById('cc').remove(); document.getElementById('doc').innerHTML = ${doc.replace(/"/g, "&quot;")}">Accept all</button><button>Settings</button></div>`;
+  // `late`: the banner arrives 2 s after the page loads, as a consent script's dialog does.
+  return `<!doctype html><html><head><title>Terms and Conditions</title></head><body><main id="doc"></main>${late ? `<script>setTimeout(() => document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(banner)}), 2000)</script>` : banner}</body></html>`;
+};
+test("a cookie wall on a candidate page is dismissed before the page is read, also when the banner arrives late", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      for (const late of [false, true]) {
+        await page.unrouteAll();
+        await site(page, { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": CONSENT_PAGE(late) });
+        await page.goto("https://casino.test/");
+        const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+        assert.equal(r.href, "https://casino.test/legal/terms-and-conditions", `late ${late}: ${r.tried.join(" | ")}`);
+        assert.equal(r.via, "link");
+        assert.match(r.text, /12\. These terms and conditions govern/);
+        assert.ok(!/uses cookies/.test(r.text), "the banner is gone");
+      }
+    } finally { await browser.close(); }
+  });
+});
+
+test("a cookie wall on a guessed path is dismissed before the page is read", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": NO_LINKS_LOBBY, "/terms-and-conditions": CONSENT_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.equal(r.via, "guess");
+      assert.match(r.text, /12\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a cookie wall on a tab a terms click opened is dismissed before the tab is read", async () => {
+  const r = await withoutJev(() => searchClick(CLICK_CHROME(POPUP_LINK("/terms-popup.html")), { "/terms-popup.html": CONSENT_PAGE() }));
+  assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+  assert.equal(r.via, "click");
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
