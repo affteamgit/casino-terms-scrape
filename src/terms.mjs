@@ -19,6 +19,9 @@ export const BLOCK_TEXT = new RegExp([
   "can(?:'|no)t access from this country", "unavailable in your (country|region|location)", "we do not accept players from", "your country is (blocked|restricted)",
   // a market exit ("no longer accepting players from Norway", "no longer accepting new registrations from the United Kingdom")
   "no longer accept(s|ing)? (new )?((players|customers|registrations) )?from",
+  // a country the casino has not authorised, or a request to turn a VPN off (blitz.be: "You are not in an authorized
+  // country. If you have a VPN activated, turn it off and try again")
+  "(not (in an? )?|not-|un)authori[sz]ed (country|region|location|territory)", "vpn[^.]{0,60}(turn it off|switch it off|disable|deactivate)|(turn|switch) (it )?off[^.]{0,30}vpn|(disable|deactivate) (your |the |any )?vpn",
   "403 forbidden", "error 1020", "sorry, you have been blocked",
   "acesso bloqueado", "medida provisória", "fora do ar por determinação",
   "ограничение местоположения", "не можем принять игроков",

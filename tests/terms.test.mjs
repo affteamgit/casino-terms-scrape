@@ -1461,3 +1461,15 @@ test("a footer terms link to a .docx: the Word document is read and stored as th
     } finally { await browser.close(); }
   });
 });
+
+// blitz.be from Norway: "You are not in an authorized country. If you have a VPN activated, turn it off and try again" (340 characters).
+test("lobbyStatus: an unauthorised-country or turn-off-your-VPN notice is geo_blocked; a lobby's VPN rule far down its footer is not", () => {
+  const blitz = "You are not in an authorized country. If you have a VPN activated, turn it off and try again. If the problem persists, contact support. Ray ID: 8f2c1a7b9d3e4f50 Country code : NO";
+  assert.equal(lobbyStatus({ text: blitz, finalUrl: "https://blitz.be/" }), "geo_blocked");
+  for (const t of ["You are not in an authorized country.", "Access from an unauthorised territory.", "Not-authorized region detected.", "Please switch off your VPN and reload the page.", "It looks like you use a VPN. Please disable your VPN to continue."])
+    assert.equal(lobbyStatus({ text: `${t} ${"Contact support for help. ".repeat(4)}`, finalUrl: "https://x.com/" }), "geo_blocked", t);
+  const lobby = "Play slots and live games every day. ".repeat(150) + "VPN use is prohibited by our terms. Please disable any VPN before you play. " + "Licensed and regulated. ".repeat(20);
+  assert.ok(lobby.indexOf("VPN") > 5000 && lobby.length > 6000);
+  assert.equal(lobbyStatus({ text: lobby, finalUrl: "https://x.com/" }), "ok");
+  assert.equal(lobbyStatus({ text: "Our VPN-friendly lobby: all games are open to every authorized player. " + "Play slots and live games every day. ".repeat(40), finalUrl: "https://x.com/" }), "ok", "no instruction to turn a VPN off");
+});
