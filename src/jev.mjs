@@ -141,7 +141,7 @@ export const acceptsPage = (answers) => !!answers && !!answers.is_terms && answe
 export const pageSummary = (answers) => answers ? `page:${fmt(answers.is_terms?.noul)}` : "off";
 
 export const LOBBY_P_MIN = 0.8; // the top lobby option must be this likely ...
-export const LOBBY_NOUL_MIN = 0.7; // ... and the question itself this certain, before a lobby is given a status
+export const LOBBY_CONFIDENCE_MIN = 0.7; // ... and the answer's confidence this high, before a lobby is given a status
 // option -> the status it gives; `gambling_site` gives none
 const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
 
@@ -156,7 +156,7 @@ export function lobbyQuestion({ url, title, text, captions }) {
     questions: {
       kind: {
         type: "choice",
-        instructions: "What is `page`?",
+        instructions: "What is `page`? Judge from the page's text and link captions, not from the domain name: a domain that once hosted a casino may now hold unrelated content.",
         criteria: {
           gambling_site: "an online casino, sportsbook, poker, bingo or lottery operator's own site, whatever its language",
           geo_or_regulatory_notice: "a notice that the service is not offered in the visitor's country or region, or is blocked by a regulator",
@@ -173,7 +173,7 @@ export function lobbyQuestion({ url, title, text, captions }) {
 /** The status a confident lobby answer gives: "geo_blocked", "closed", "parked", "not_casino", "blocked_http"; null for a gambling site, an unsure answer or none. */
 export function lobbyVerdict(answers) {
   const a = answers?.kind;
-  if (!a || !(a.noul >= LOBBY_NOUL_MIN) || !a.probabilities || typeof a.probabilities !== "object") return null;
+  if (!a || !((a.confidence ?? a.noul) >= LOBBY_CONFIDENCE_MIN) || !a.probabilities || typeof a.probabilities !== "object") return null;
   const [top, p] = Object.entries(a.probabilities).sort((x, y) => y[1] - x[1])[0] || [];
   return p >= LOBBY_P_MIN && Object.hasOwn(LOBBY_STATUS, top) ? LOBBY_STATUS[top] : null;
 }

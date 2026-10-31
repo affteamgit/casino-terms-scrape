@@ -822,10 +822,10 @@ test("a stub that shows the lobby with a link to the terms document is hopped fr
 
 // A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.
 const NO_LINKS_LOBBY = LOBBY(`<a href="/about">About us</a><a href="/blog">Blog</a>`);
-const lobbyAsk = ({ option = "not_gambling_site", p = 0.9, noul = 0.9, log = [], seen = [] } = {}) => async (state, questions) => {
+const lobbyAsk = ({ option = "not_gambling_site", p = 0.9, confidence = 0.9, log = [], seen = [] } = {}) => async (state, questions) => {
   if (!questions.kind) return fakeAsk()(state, questions);
   log.push("kind"); seen.push(state);
-  return { kind: { choice: option, noul, probabilities: { [option]: p, gambling_site: 1 - p } } };
+  return { kind: { type: "choice", choice: option, confidence, probabilities: { [option]: p, gambling_site: 1 - p } } };
 };
 
 test("a lobby with no terms link is classified by Jev's lobby judgment: not a gambling site becomes lobbyClass not_casino, a gambling site stays unclassified", async () => {
@@ -847,7 +847,7 @@ test("a lobby with no terms link is classified by Jev's lobby judgment: not a ga
       assert.ok(seen[0].page.captions.includes("About us"), seen[0].page.captions.join(","));
       const casino = await search({ notes: [], ask: lobbyAsk({ option: "gambling_site", p: 0.95 }) });
       assert.equal(casino.lobbyClass ?? null, null);
-      const unsure = await search({ notes: [], ask: lobbyAsk({ noul: 0.4 }) });
+      const unsure = await search({ notes: [], ask: lobbyAsk({ confidence: 0.4 }) });
       assert.equal(unsure.lobbyClass ?? null, null, "an unsure answer leaves the regex result");
     } finally { await browser.close(); }
   });
