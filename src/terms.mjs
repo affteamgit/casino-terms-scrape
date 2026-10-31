@@ -1,9 +1,9 @@
 // Reads a casino: the lobby and its footer, the terms search, and documents. No sessions or jobs here: scrape.mjs
 // opens the browser, probe-jev.mjs opens a local one, and the tests call the pure parts.
-import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, namedTermsPage, TERMS_TEXT, TERMS_I18N, NOT_TERMS_I18N } from "./links.mjs";
+import { host, PRODUCT, termsCandidates, termsScore, registrable, isPdf, docLinks, withinDomain, siblingGuesses, promoSiblingGuesses, namedTermsPage, readsLikeTerms, TERMS_TEXT, NOT_TERMS_I18N } from "./links.mjs";
 import { hiddenTextInPage, preferHidden } from "./doctext.mjs";
 import { pdfText } from "./pdf.mjs";
-import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
+import { askJev, jevEnabled, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, exclusionQuestion, acceptsPage, acceptsBorderline, pageSummary, PAGE_NOUL_BORDER, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "./jev.mjs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -294,9 +294,8 @@ const DOC_LOADING = /\bloading\b/i;
 // A page whose first few hundred words are mostly the same token is a font-measurement or skeleton placeholder
 // ("word word word …" on Winoly), not content.
 const placeholder = (t) => new Set(t.slice(0, 3000).toLowerCase().split(/\s+/)).size < 40;
-// The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
-const TERMS_WORDS = new RegExp(`\\bterms?\\b|\\bconditions?\\b|agreement|termos|condi[cç]|\\bagb\\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden|${TERMS_I18N}`, "gi");
-export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
+// The general terms talk about terms throughout (readsLikeTerms lives in links.mjs, so jev.mjs can use it too).
+export { readsLikeTerms };
 // `want` says what a finished document looks like; until the text satisfies it the wait goes on, since a shell
 // with only the navigation is stable long before the document itself arrives (NetBet's help pages). Text that does
 // not satisfy it may be in the page but collapsed (SoftSwiss accordions): then the hidden text is read, and used when
@@ -404,9 +403,12 @@ export function namesProduct(l) {
   return (!/casino/i.test(text) && (PRODUCT.test(text) || PRODUCT_CAPTION.test(text))) || (!/casino/i.test(words) && PRODUCT.test(words));
 }
 
-/** The guess phase's URLs in order: the sitemap's terms URLs, the sibling guesses, then the common paths. */
-export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "" }) =>
-  [...sitemapTerms(sitemapLocs), ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
+/**
+ * The guess phase's URLs in order: the sitemap's terms URLs, the general terms next to a rejected promotion's or
+ * product's page (`promoGuesses`), the sibling guesses, then the common paths.
+ */
+export const guessOrder = ({ sitemapLocs = [], links = [], pageUrl, origin, lang = "", promoGuesses = [] }) =>
+  [...sitemapTerms(sitemapLocs), ...promoGuesses, ...siblingGuesses(links, pageUrl), ...guessUrls(origin, lang)];
 
 const MAX_PDF = 20 * 1048576;
 export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", ...a); };
@@ -414,7 +416,8 @@ export const dbg = (...a) => { if (process.env.DEBUG) console.error("[debug]", .
  * Opens the casino's terms, in this order: Jev's picks, then anchors that score as the general terms (up to three
  * besides the picks); for apps whose footer routes from plain elements, a click on the element that reads like the
  * terms link; the registration page's terms link; the sitemap and the paths casinos commonly use; and last, anchors
- * that scored as a promotion's terms, held to the same terms check. Returns the page's text and URL, and what was tried.
+ * that scored 0 or less (a promotion's terms, mostly), judged by Jev alone while it is up. Returns the page's text
+ * and URL, and what was tried.
  * `unblock` (optional) lifts the session's URL blocklist and resolves true: a page whose app needs a blocked file
  * (wantedwin's terms come from a sqlite3 .wasm) renders an error instead of the document. `jev.notes` collects what Jev
  * said; `jev.ask` (askJev unless given: the tests pass a fake) asks it.
@@ -466,6 +469,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // `fast: false` skips the pattern's fast accept, so only Jev can accept the text (and without Jev it is rejected).
   // `jevOnly`: a link the heuristic does not rank as the general terms (see jevOnly below): Jev decides while it can be
   // asked; with no key, or once a call has failed, the pattern decides as it always did.
+  // Jev reads the page's own text, what it adds beyond the lobby's header and footer, when that is 1,500 characters or
+  // more: real terms under the lobby's menu came back 0.65-0.69, and 0.91 on their own text. A borderline answer
+  // (PAGE_NOUL_BORDER up to PAGE_NOUL_MIN) asks the exclusion question about the same page too: the page is accepted
+  // when Jev rules the exclusions out and the page reads like terms. Both answers are one judgment.
   const isTermsPage = async (text, meta, { fast = true, jevOnly = false } = {}) => {
     const jevUp = jevEnabled() && !jevDown;
     if (fast && (!jevOnly || !jevUp) && readsLikeTerms(text)) return true; // the pattern is the fast accept; Jev reads what it rejects
@@ -473,13 +480,19 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // Keyed on the text's length too: an in-place click leaves the URL at the lobby's, and each opens a different document.
     const jk = `${meta.url}|${text.length}`;
     if (!judged.has(jk)) judged.set(jk, (async () => {
+      let answers, exclusion;
       try {
-        const q = termsPageQuestion({ ...meta, text });
-        const answers = await ask(q.state, q.questions);
-        note(pageSummary(answers));
-        dbg("jev page", meta.url, pageSummary(answers));
-        return acceptsPage(answers);
-      } catch (e) { failed(e); return jevOnly && fast && readsLikeTerms(text); } // Jev failed: the pattern decides
+        const core = coreText(text, lobbyText), sent = core.length >= 1500 ? core : text;
+        const q = termsPageQuestion({ ...meta, text: sent, core: sent === core });
+        answers = await ask(q.state, q.questions);
+        if (!acceptsPage(answers) && answers?.is_terms?.noul >= PAGE_NOUL_BORDER) {
+          const x = exclusionQuestion({ ...meta, text: sent, core: sent === core });
+          exclusion = await ask(x.state, x.questions);
+        }
+        note(pageSummary(answers, exclusion));
+        dbg("jev page", meta.url, pageSummary(answers, exclusion));
+        return acceptsPage(answers) || acceptsBorderline(answers, exclusion, text);
+      } catch (e) { if (answers) note(pageSummary(answers)); failed(e); return jevOnly && fast && readsLikeTerms(text); } // Jev failed: the pattern decides
     })());
     return judged.get(jk);
   };
@@ -488,6 +501,9 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // link whose caption or path names a product or a promotion without also saying casino (elarabet's "Sportsbook Terms
   // & Conditions" read like terms and were stored as the general terms).
   const jevOnly = (c) => namesProduct(c) || (c.jev ? !(c.hscore > 0) : typeof c.score === "number" && c.score <= 0);
+  // How a candidate's page is judged. A link of the last-resort pass (`lowScore`: scored 0 or less) is Jev's alone: the
+  // pattern never accepts it, not even when Jev fails on it. `fast`: whether the pattern may accept a link it ranks.
+  const judging = (c, fast = true) => (c.lowScore ? { fast: false, jevOnly: true } : { fast, jevOnly: jevOnly(c) });
   const pageMeta = (p = page) => p.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: p.url(), title: "", headings: [] }));
   dbg(lobby.url, `${lobby.links.length} links, candidates:`, cands.slice(0, 6).map((c) => `${c.score} ${c.href} "${c.text.slice(0, 30)}"`).join(" | "), "clickables:", lobby.clickables.map((c) => `"${c.text}"${c.footer ? "(footer)" : ""}`).join(" | "));
   // A PDF's bytes are fetched inside the page, so they travel the session's route (its proxy, its cookies), and read
@@ -519,7 +535,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const tryPdf = async (c) => {
     try {
       const text = await pdfText(await pdfBytes(c.href));
-      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, { jevOnly: jevOnly(c) });
+      const good = text.length >= 500 && await isTermsPage(text, { url: c.href, title: "", headings: [] }, judging(c));
       dbg("pdf", c.href, good ? `ok ${text.length} chars` : `${text.length} chars, not terms-like`);
       if (good) return { href: c.href, text, via: "link", pdf: true, tried };
       tried.push(`${c.href} (${text.length < 500 ? "pdf thin" : "pdf not terms-like"})`);
@@ -581,6 +597,10 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     return tryLink(c);
   };
   const visited = new Set(); // every URL tryLink opened, so a hub does not send the search back to one
+  // The general terms next to a page rejected as a promotion's or a product's (/en/terms/bonus/ -> /en/terms/,
+  // /help/bonus-terms-and-conditions -> /help/terms-and-conditions): guessed before the common paths.
+  const promoGuesses = [];
+  const besidePromo = (u) => { for (const g of promoSiblingGuesses(u)) if (!promoGuesses.includes(g)) promoGuesses.push(g); };
   const tryLink = async (c) => {
     visited.add(c.href);
     if (isPdf(c.href)) return tryPdf(c);
@@ -617,10 +637,11 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
       // A terms page laid out as an accordion shows only its section titles (SoftSwiss "/rules" pages): open every
       // collapsed section and read again.
       if (!expanded && (!d.ok || !readsLikeTerms(d.text))) { if (await expandSections(page)) d = await readDoc(page, 10000, readsLikeTerms); }
-      const good = d.ok && await isTermsPage(d.text, await pageMeta(), { jevOnly: jevOnly(c) });
+      const good = d.ok && await isTermsPage(d.text, await pageMeta(), judging(c));
       dbg("link", c.href, good ? `ok ${d.text.length} chars` : d.ok ? "not terms-like" : d.note);
       if (good) return fuller({ href: page.url(), text: d.text, via: c.jev ? "jev" : "link", hidden: !!d.hidden, frame: !!d.frame, tried });
       tried.push(`${c.href} (${d.ok ? "not terms-like" : d.note})`);
+      if (d.ok) besidePromo(page.url());
       // A strong candidate (a Jev pick or a link that scores as the terms) that opened but did not read as the terms may
       // be broken by the blocklist: lift it for the rest of this casino and read the candidate once more.
       if (d.note !== "wall") { const r = await retryUnblocked(c); if (r !== undefined) return r; }
@@ -633,7 +654,7 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
     // when it is not the lobby's own and reads like terms, is judged as the terms.
     if (await expandSections(page)) { d = await readDoc(page, 10000, want); if (!shell(d)) return judge(d, true); }
     const h = await page.evaluate(hiddenTextInPage).catch(() => "");
-    if (h && !hiddenShell(h) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), { fast: !jevOnly(c), jevOnly: jevOnly(c) })) {
+    if (h && !hiddenShell(h) && readsLikeTerms(h) && await isTermsPage(h, await pageMeta(), judging(c, !jevOnly(c)))) {
       dbg("link", c.href, `ok ${h.length} hidden chars under the lobby shell`);
       return fuller({ href: page.url(), text: h, via: c.jev ? "jev" : "link", hidden: true, tried });
     }
@@ -773,7 +794,8 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   // the browser so a single-page app routes them. A hit must read like terms, not the lobby shell.
   const origin = new URL(lobby.url).origin;
   const lang = (new URL(lobby.url).pathname.match(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/|$)/i) || [""])[0];
-  // In order: the terms URLs the sitemap publishes; the terms' likely siblings, in the directory of the lobby's privacy,
+  // In order: the terms URLs the sitemap publishes; the general terms next to a page rejected as a promotion's or a
+  // product's (promoGuesses); the terms' likely siblings, in the directory of the lobby's privacy,
   // cookie or responsible-gambling page (virginbet.co.za links only /dl/cookiepolicy; one group, not counted against
   // the twelve); then the twelve common paths.
   const guesses = [];
@@ -792,24 +814,41 @@ export async function fetchTerms(page, lobby, jev = { notes: [] }, { unblock } =
   const pools = [];
   if (sm.index) { for (const child of sitemapChildren(sm.locs)) pools.push((await sitemap(child)).locs); }
   else pools.push(sm.locs);
-  guesses.push(...guessOrder({ sitemapLocs: pools.flat(), links: lobby.links, pageUrl: lobby.url, origin, lang }));
-  for (const href of [...new Set(guesses)]) {
-    if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); break; }
-    try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
-    const d = await readDoc(page, 8000, readsLikeTerms);
-    if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
-    // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text (or hidden text) again and passes
-    // the terms check.
-    const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && sameAsLobby(d.text, lobbyHidden)) && (await isTermsPage(d.text, await pageMeta()));
-    dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
-    if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, frame: !!d.frame, tried });
-    const hopped = await hopFrom(d, guessUntil);
-    if (hopped) return hopped;
-  }
+  // Each URL is opened once, until the budget; the first that reads as the terms (or a wall) ends the search.
+  const guessed = new Set();
+  const runGuesses = async (list) => {
+    for (const href of list) {
+      if (guessed.has(href)) continue;
+      if (Date.now() > guessUntil) { tried.push("guessing stopped at the time budget"); return null; }
+      guessed.add(href);
+      try { await page.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 }); } catch { continue; }
+      const d = await readDoc(page, 8000, readsLikeTerms);
+      if (d.note === "wall") { tried.push(`${href} (wall)`); return { href: "", text: "", via: "", tried, walled: true }; }
+      // Terms, not the lobby or a 404 shell: reads like terms, is not the lobby's text (or hidden text) again and passes
+      // the terms check.
+      const looksLikeTerms = d.ok && !isLobby(d.text) && !(d.hidden && sameAsLobby(d.text, lobbyHidden)) && (await isTermsPage(d.text, await pageMeta()));
+      dbg("guess", href, d.ok ? `${d.text.length} chars${looksLikeTerms ? " TERMS" : ""}` : d.note);
+      if (looksLikeTerms) return fuller({ href: page.url(), text: d.text, via: "guess", hidden: !!d.hidden, frame: !!d.frame, tried });
+      const hopped = await hopFrom(d, guessUntil);
+      if (hopped) return hopped;
+    }
+    return null;
+  };
+  const unopened = () => promoGuesses.filter((u) => !visited.has(u));
+  guesses.push(...guessOrder({ sitemapLocs: pools.flat(), links: lobby.links, pageUrl: lobby.url, origin, lang, promoGuesses: unopened() }));
+  const g = await runGuesses(guesses);
+  if (g) return g;
   tried.push(`${guesses.length} sitemap/guessed paths`);
-  // Last, the links that scored as a promotion's terms: one may still be the general terms, so each goes through the
-  // same terms check (a VIP level page is not the terms: starzbet.com).
-  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) { const r = await tryLink(c); if (r) return { ...r, via: "promo-terms" }; }
+  // Last, the links that scored 0 or less (a promotion's terms, mostly): one may still be the general terms, but only Jev
+  // may say so (a VIP level page is not the terms: starzbet.com; a voucher's terms read like terms: sbotop), so the pass
+  // runs while Jev is up. A page it rejects as a promotion's has its general-terms siblings guessed, within the budget.
+  for (const c of cands.filter((c) => c.score <= 0).slice(0, 2)) {
+    if (!jevEnabled() || jevDown) { tried.push(`low-score links skipped (Jev ${jevEnabled() ? "down" : "off"})`); break; }
+    const r = await tryLink({ ...c, lowScore: true });
+    if (r) return { ...r, via: "low-score link" };
+    const s = await runGuesses(unopened());
+    if (s) return s;
+  }
   if (!cands.length && !lobby.clickables.length) {
     tried.unshift("no terms link or text on the lobby");
     // Nothing to open: Jev says what this page is (an affiliate site, a notice in a language the patterns miss).

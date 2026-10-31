@@ -102,15 +102,19 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
    scored (`src/links.mjs`) and up to three general-terms candidates are tried; where the footer routes from plain
    elements instead of anchors (Lebull) the element that reads like the terms link is clicked; the registration
    page is scanned, since it always links the terms a player accepts (PlayGrand); the sitemap and the paths
-   casinos commonly use are opened in the browser (Rokubet); and only then a promotion's terms page is taken. A
+   casinos commonly use are opened in the browser (Rokubet), the general terms next to a rejected bonus page first
+   (`/en/terms/bonus/` -> `/en/terms/`); and only then a link scored as a promotion's terms is opened, which only Jev
+   may accept, so it is skipped while Jev is off or down. A
    page that only asks for a country (unibet.com) is followed to the brand's regional site first. A document counts
    only once its text has stopped growing, is not a bot wall or a font placeholder, and reads like terms (a
    help-centre home page does not). The `pages` column says how the terms were reached
-   (`via click`, `via signup-page`, `via guess`, `via promo-terms`), and `terms_tried` what failed. A lobby reached
+   (`via click`, `via signup-page`, `via guess`, `via low-score link`), and `terms_tried` what failed. A lobby reached
    without its terms (a bot wall on the terms page through that exit) is kept only as a fallback while the other
    exit countries are tried. Jev is shown the footer's links and clickable texts and asked which is the general terms;
    when it is confident one exists its pick is tried first (`via jev`). A page the terms pattern rejects is judged by
-   Jev before it is given up on. Terms hidden in collapsed sections are read from the DOM (`hidden text`), and PDFs
+   Jev before it is given up on; Jev reads what the page adds beyond the lobby's header and footer, and a borderline
+   answer (0.5 to 0.7) is accepted only when Jev also rules out a promotion's, a product's or a policy page
+   (`page:0.65 excl:0.12` in the `jev` column). Terms hidden in collapsed sections are read from the DOM (`hidden text`), and PDFs
    are read with pdf.js (`pdf`).
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.

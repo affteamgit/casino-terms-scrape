@@ -45,6 +45,9 @@ export const NOT_TERMS_I18N = [
   "\\bigr[ae]\\b|spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: Serbian/Croatian, German, Turkish, Chinese, Japanese, Korean, Finnish
 ].join("|");
 export const TERMS_TEXT = new RegExp(String.raw`terms|conditions|\bt\s*&\s*cs?\b|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår|${TERMS_I18N}|${RULES_I18N}`, "i");
+// The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
+const TERMS_WORDS = new RegExp(`\\bterms?\\b|\\bconditions?\\b|agreement|termos|condi[cç]|\\bagb\\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden|${TERMS_I18N}`, "gi");
+export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
 // A page whose own name is the general terms (the path's last segment) is a candidate whatever its caption says:
 // horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
 const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
@@ -174,6 +177,28 @@ export function siblingGuesses(links, pageUrl) {
 }
 
 /**
+ * The general terms next to a rejected promotion's or product's page, on its host: (i) the path without its promotion or
+ * product segments, when what remains names the terms (/en/terms/bonus/ -> /en/terms/); (ii) the last such segment
+ * without its promotion or product words, when what remains names the terms (/help/bonus-terms-and-conditions ->
+ * /help/terms-and-conditions); (iii) that segment's directory with each of SIBLING_NAMES (/help/terms, ...). No guess
+ * keeps a promotion's or product's segment. [] for a URL whose path names neither.
+ */
+export function promoSiblingGuesses(url) {
+  let u;
+  try { u = new URL(url); } catch { return []; }
+  const segs = u.pathname.split("/").filter(Boolean), i = segs.findLastIndex(namesPromo);
+  if (!/^https?:$/.test(u.protocol) || i < 0) return [];
+  const at = (parts, end = "") => `${u.origin}/${parts.join("/")}${end}`;
+  const slash = u.pathname.endsWith("/") ? "/" : "", plain = (s) => !namesPromo(s), dir = segs.slice(0, i).filter(plain), out = [];
+  const rest = segs.filter(plain);
+  if (rest.length && TERMS_PATH.test(rest.join("/"))) out.push(at(rest, slash));
+  const stripped = segs[i].split(/[-_]+/).filter((w) => w && !promoWord(w)).join("-");
+  if (stripped && TERMS_PATH.test(stripped)) out.push(at([...dir, stripped], slash));
+  for (const n of SIBLING_NAMES) out.push(at([...dir, n]));
+  return [...new Set(out)];
+}
+
+/**
  * Is `href` a page on the casino's domain whose own name (the path's last segment) is the general terms, with no
  * segment naming a promotion, a product, a VIP club or another policy (/promotions/terms-and-conditions,
  * /sportsbook/terms-and-conditions, /vip/terms-conditions are not)?
@@ -188,6 +213,9 @@ export function namedTermsPage(href, pageUrl) {
 // A path segment that names a promotion, a product, a VIP club or another policy, read as whole words (split on - and
 // _, each matched from its start): /promotions and /my_bonus do, /preferences ("refer") and /permission ("mission") do not.
 const PROMO_WORD = new RegExp(`^(?:${PROMO.source})`, "i"), NOT_TERMS_WORD = new RegExp(`^(?:${NOT_TERMS.source})`, "i");
+// A word that names a promotion or a product, and a path segment holding one (/bonus-terms, /sportsbook, /my_bonus).
+const promoWord = (w) => PROMO_WORD.test(w) || PRODUCT.test(w);
+const namesPromo = (seg) => { const words = seg.split(/[-_.]+/).filter(Boolean); return PRODUCT.test(words.join(" ")) || words.some(promoWord); };
 function namesOther(seg) {
   const words = seg.split(/[-_.]+/).filter(Boolean);
   return NOT_TERMS_WORD.test(seg) || PRODUCT.test(words.join(" ")) || /casino-?games/i.test(seg) || words.some((w) => PROMO_WORD.test(w) || NOT_TERMS_WORD.test(w));

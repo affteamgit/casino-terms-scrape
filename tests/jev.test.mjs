@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, jevEnabled, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "../src/jev.mjs";
+import { askJev, linkEntries, termsLinkQuestions, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary, exclusionQuestion, acceptsBorderline, PAGE_NOUL_BORDER, EXCLUSION_MAX, jevEnabled, MAX_ENTRIES, lobbyQuestion, lobbyVerdict, lobbySummary } from "../src/jev.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 const betico = {
@@ -139,6 +139,9 @@ test("summaries", () => {
   assert.equal(linkSummary({ terms_link: { probabilities: { a: 0.4 } } }), "link:?/0.40");
   assert.equal(pageSummary({}), "page:?");
   assert.equal(pageSummary({ is_terms: {} }), "page:?");
+  // a borderline page: both answers
+  assert.equal(pageSummary({ type: "noul", is_terms: { type: "noul", noul: 0.65 } }, { not_general: { type: "noul", noul: 0.123 } }), "page:0.65 excl:0.12");
+  assert.equal(pageSummary({ is_terms: { noul: 0.65 } }, {}), "page:0.65 excl:?");
 });
 
 test("linkEntries: whitespace-only text counts as empty; missing links/clickables are tolerated", () => {
@@ -156,7 +159,8 @@ test("termsPageQuestion caps the text and headings; acceptsPage applies the thre
   const q = termsPageQuestion({ url: "https://x.com/" + "p".repeat(300), title: "Rules", headings: Array.from({ length: 40 }, (_, i) => `H${i}`), text: "t".repeat(9000) });
   assert.equal(q.state.page.text.length, 6000);
   assert.equal(q.state.page.url.length, 200, "the URL, capped, so Jev sees the path");
-  assert.deepEqual(Object.keys(q.state.page), ["url", "title", "headings", "text"]);
+  assert.deepEqual(Object.keys(q.state.page), ["url", "title", "headings", "text", "core"]);
+  assert.equal(q.state.page.core, false, "the full text unless told it is the core");
   assert.equal(termsPageQuestion({ title: "T", text: "x" }).state.page.url, "", "no URL: empty");
   assert.equal(q.state.page.headings.length, 30);
   assert.equal(q.questions.is_terms.type, "noul");
@@ -247,4 +251,37 @@ test("lobbyVerdict: the top option at 0.8 with confidence 0.7 becomes a status; 
   assert.equal(lobbyVerdict({}), null);
   assert.equal(lobbySummary(kind("not_gambling_site", 0.92)), "lobby:not_gambling_site:0.92");
   assert.equal(lobbySummary(null), "off");
+});
+
+// A text that reads like terms (readsLikeTerms: 2,000 characters, 5 terms words) and one that does not.
+const LONG_TERMS = "These terms and conditions govern your account, deposits, bets and withdrawals. ".repeat(40);
+const LONG_OTHER = "Play slots and live games every day with fast payouts and friendly support. ".repeat(40);
+
+test("termsPageQuestion: the text sent may be the page's core (what it adds beyond the lobby), and the state says so", () => {
+  const q = termsPageQuestion({ url: "https://x.com/terms", title: "Terms", headings: [], text: LONG_TERMS, core: true });
+  assert.equal(q.state.page.core, true);
+  assert.equal(q.state.page.text, LONG_TERMS.slice(0, 6000));
+});
+
+test("exclusionQuestion: one Noul question, not_general, about the same page state", () => {
+  const meta = { url: "https://x.com/en/terms/bonus/", title: "Bonus Terms", headings: ["Bonus"], text: LONG_TERMS, core: true };
+  const q = exclusionQuestion(meta);
+  assert.deepEqual(q.state, termsPageQuestion(meta).state, "the same page as the terms question");
+  assert.deepEqual(Object.keys(q.questions), ["not_general"]);
+  assert.equal(q.questions.not_general.type, "noul");
+  assert.match(q.questions.not_general.instructions, /promotion's or bonus terms, one product section's terms \(sportsbook, poker, bingo, racing, live casino\), a privacy or cookie policy, game or betting rules, a help article, or anything other than the general terms and conditions of the whole site/);
+  assert.ok(q.questions.not_general.criteria.true && q.questions.not_general.criteria.false);
+  assert.match(q.questions.not_general.criteria.false, /general terms and conditions/);
+});
+
+test("acceptsBorderline: page 0.5 or more, exclusion 0.3 or less, and the text reads like terms", () => {
+  assert.equal(PAGE_NOUL_BORDER, 0.5);
+  assert.equal(EXCLUSION_MAX, 0.3);
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.65 } }, { not_general: { noul: 0.12 } }, LONG_TERMS), true);
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.5 } }, { not_general: { noul: 0.3 } }, LONG_TERMS), true, "both thresholds inclusive");
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.65 } }, { not_general: { noul: 0.4 } }, LONG_TERMS), false, "Jev does not rule out the exclusions");
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.45 } }, { not_general: { noul: 0.12 } }, LONG_TERMS), false, "below the band");
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.65 } }, { not_general: { noul: 0.12 } }, LONG_OTHER), false, "does not read like terms");
+  assert.equal(acceptsBorderline({ is_terms: { noul: 0.65 } }, {}, LONG_TERMS), false, "no exclusion answer");
+  assert.equal(acceptsBorderline(null, null, LONG_TERMS), false);
 });

@@ -486,6 +486,9 @@ test("guessOrder: the sitemap's terms URLs, then the sibling guesses, then the c
   assert.ok(sitemap.length && siblings.length && common.length);
   assert.ok(Math.max(...sitemap) < Math.min(...siblings), "every sitemap URL before every sibling");
   assert.ok(Math.max(...siblings) < Math.min(...common), "every sibling before every common path");
+  // The general terms next to a rejected promotion's page come after the sitemap's and before the lobby's siblings.
+  const p = guessOrder({ sitemapLocs: [`${o}/rules/terms-and-conditions`], links: [{ text: "Cookie Policy", href: `${o}/dl/cookiepolicy` }], pageUrl: `${o}/`, origin: o, lang: "", promoGuesses: [`${o}/en/terms/`] });
+  assert.equal(p.indexOf(`${o}/en/terms/`), 1, p.slice(0, 3).join(" "));
 });
 
 // Jev, faked: `ask` stands in for askJev. A key is set so the code treats Jev as available; the fake never uses it.
@@ -557,22 +560,115 @@ test("an in-place document with no terms heading is accepted on Jev's judgment",
 // A promotion's terms page that reads like terms: long, and full of "terms".
 const PROMO_TERMS_PAGE = `<!doctype html><html><head><title>Bonus Terms</title></head><body><h1>Bonus Terms</h1>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${SECTION(i)}</p>`).join("")}</body></html>`;
 
-test("a promotion's terms link is not fast-accepted when Jev can judge it; without Jev, or when Jev fails, the pattern decides as before", async () => {
+test("a link scored 0 or less is Jev's alone: not opened without Jev or with Jev down, never accepted on the pattern, found on Jev's yes as a low-score link", async () => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
     const page = await browser.newPage();
     await site(page, { "/": LOBBY("", `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE });
-    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const read = [];
+    page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+    const search = async (jev) => { await page.goto("https://casino.test/"); read.length = 0; return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const notOpened = (r, why) => {
+      assert.equal(r.text, "", `${why}: accepted ${r.href} via ${r.via}`);
+      assert.ok(!read.includes("/bonus-terms"), `${why}: the link was opened`);
+      assert.ok(!r.tried.some((t) => t.includes("/bonus-terms")), `${why}: ${r.tried.join(" | ")}`);
+    };
     const off = await withoutJev(() => search({ notes: [] }));
-    assert.equal(off.via, "promo-terms", off.tried.join(" | "));
+    notOpened(off, "no key");
+    assert.ok(off.tried.includes("low-score links skipped (Jev off)"), off.tried.join(" | "));
+    // Jev down: the footer question failed, so no page question can be asked.
+    const down = await withJevKey(() => search({ notes: [], ask: async () => { throw new Error("boom"); } }));
+    notOpened(down, "Jev down");
+    assert.ok(down.tried.includes("low-score links skipped (Jev down)"), down.tried.join(" | "));
+    assert.notEqual(down.via, "promo-terms");
     const log = [];
     const no = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
     assert.equal(no.text, "", `accepted ${no.href}`);
     assert.ok(log.includes("page"), "Jev judged the page");
+    // Jev fails on the page question itself: the pattern does not take over.
     const failing = async (state, questions) => { if (questions.is_terms) throw new Error("boom"); return fakeAsk()(state, questions); };
-    const down = await withJevKey(() => search({ notes: [], ask: failing }));
-    assert.equal(down.via, "promo-terms", down.tried.join(" | "));
+    const fails = await withJevKey(() => search({ notes: [], ask: failing }));
+    assert.equal(fails.text, "", `accepted ${fails.href} via ${fails.via}`);
+    const yes = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => true }) }));
+    assert.equal(yes.href, "https://casino.test/bonus-terms", yes.tried.join(" | "));
+    assert.equal(yes.via, "low-score link");
   } finally { await browser.close(); }
+});
+
+// Jev, scripted: `pick` as in fakeAsk; `page` and `excl` are the is_terms and not_general answers; `seen` records each
+// page question (`q`: its question, `page`: the state it was sent).
+const scriptAsk = ({ pick = null, page = 0.05, excl = 1, seen = [] } = {}) => async (state, questions) => {
+  if (questions.has_terms) return fakeAsk({ pick })(state, questions);
+  seen.push({ q: Object.keys(questions).join(","), page: state.page });
+  return questions.not_general ? { not_general: { type: "noul", noul: excl } } : { is_terms: { type: "noul", noul: page } };
+};
+
+test("a borderline page (Jev 0.65) is the terms when Jev also rules out the exclusions, and not when it does not", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`), "/info/page-7": TERMS_PAGE() });
+      const search = async (ask) => { await page.goto("https://casino.test/"); const jev = { notes: [], ask }; return { ...(await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev)), notes: jev.notes }; };
+      const seen = [];
+      const yes = await search(scriptAsk({ pick: "/info/page-7", page: 0.65, excl: 0.1, seen }));
+      assert.equal(yes.href, "https://casino.test/info/page-7", yes.tried.join(" | "));
+      assert.equal(yes.via, "jev");
+      assert.deepEqual(seen.map((x) => x.q), ["is_terms", "not_general"], "one judgment: both questions, once");
+      assert.equal(seen[1].page.text, seen[0].page.text, "the exclusion question is about the same page");
+      assert.ok(yes.notes.includes("page:0.65 excl:0.10"), yes.notes.join(" "));
+      const no = await search(scriptAsk({ pick: "/info/page-7", page: 0.65, excl: 0.5 }));
+      assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+      assert.ok(no.notes.includes("page:0.65 excl:0.50"), no.notes.join(" "));
+      // Below the band no exclusion question is asked.
+      const low = [];
+      const below = await search(scriptAsk({ pick: "/info/page-7", page: 0.45, excl: 0, seen: low }));
+      assert.equal(below.text, "", `accepted ${below.href} via ${below.via}`);
+      assert.ok(low.every((x) => x.q === "is_terms"), low.map((x) => x.q).join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("Jev reads a page's own text, not the lobby's header above it", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`).replace("<body>", `<body>${HEADER}`), "/info/page-7": TERMS_PAGE().replace("<body>", `<body>${HEADER}`) });
+      await page.goto("https://casino.test/");
+      const seen = [];
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: scriptAsk({ pick: "/info/page-7", page: 0.95, seen }) });
+      assert.equal(r.href, "https://casino.test/info/page-7", r.tried.join(" | "));
+      assert.match(r.text, /^\s*Game category 0/, "the page itself opens with the lobby's header");
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].page.core, true);
+      assert.ok(!/Game category/.test(seen[0].page.text.slice(0, 200)), `Jev saw the header: ${seen[0].page.text.slice(0, 120)}`);
+      assert.match(seen[0].page.text, /^Terms and Conditions 1\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a rejected bonus-terms page leads to the general terms next to it, guessed before the common paths (/en/terms/bonus/ -> /en/terms/)", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/en/terms/bonus/">Bonus Terms</a>`), "/en/terms/bonus/": PROMO_TERMS_PAGE, "/en/terms/": TERMS_PAGE() });
+      const read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      const search = async (pick) => { await page.goto("https://casino.test/"); read.length = 0; return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick, accept: (p) => !/bonus/i.test(p.url) }) }); };
+      // Jev picks the bonus terms; the page read rejects them.
+      const picked = await search("/en/terms/bonus/");
+      assert.equal(picked.href, "https://casino.test/en/terms/", picked.tried.join(" | "));
+      assert.equal(picked.via, "guess");
+      assert.ok(picked.tried.some((t) => t.startsWith("https://casino.test/en/terms/bonus/ (")), picked.tried.join(" | "));
+      assert.ok(!read.includes("/terms-and-conditions"), `a common path was guessed first: ${read.join(" ")}`);
+      // The bonus terms are only a low-scored link: the general terms next to them are still guessed after Jev rejects them.
+      const low = await search(null);
+      assert.equal(low.href, "https://casino.test/en/terms/", low.tried.join(" | "));
+      assert.equal(low.via, "guess");
+    } finally { await browser.close(); }
+  });
 });
 
 test("a Jev pick the heuristic does not score is accepted on Jev's page judgment, not on the pattern", async () => {

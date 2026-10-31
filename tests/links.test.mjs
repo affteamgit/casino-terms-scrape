@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { host, termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
+import { host, termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, promoSiblingGuesses, SIBLING_NAMES, namedTermsPage } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -228,4 +228,23 @@ test("termsCandidates: rules and policy captions in other languages are not the 
   for (const [t, p] of [["Adatvédelmi szabályzat", "/adatvedelem"], ["Pravila igre", "/p/12"], ["Politika privatnosti", "/privatnost"], ["游戏规则", "/p/12"], ["Gizlilik Politikası", "/p/12"]]) assert.deepEqual(cand(t, p), [], t);
   for (const t of ["Opšti uslovi", "Szabályzat", "Pravila", "Általános szerződési feltételek", "T&Cs"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
   assert.deepEqual(cand("Sport & Casino"), []);
+});
+
+test("promoSiblingGuesses: the general terms next to a rejected bonus or product page", () => {
+  const a = promoSiblingGuesses("https://x.com/en/terms/bonus/");
+  assert.ok(a.includes("https://x.com/en/terms/"), a.join(" "));
+  const b = promoSiblingGuesses("https://x.com/help/bonus-terms-and-conditions");
+  assert.ok(b.includes("https://x.com/help/terms-and-conditions") && b.includes("https://x.com/help/terms"), b.join(" "));
+  assert.equal(b[0], "https://x.com/help/terms-and-conditions", "the segment without its promotion word comes first");
+  assert.deepEqual(b.filter((u) => u.startsWith("https://x.com/help/")).length, b.length, "all in the page's directory");
+  assert.ok(!b.includes("https://x.com/help"), "a help directory alone is not a terms guess");
+  assert.equal(new Set(b).size, b.length, "unique");
+  // a product's terms, with the query and hash dropped
+  const c = promoSiblingGuesses("https://x.com/sportsbook-terms-and-conditions?lang=en#top");
+  assert.deepEqual(c, ["https://x.com/terms-and-conditions", ...SIBLING_NAMES.filter((n) => n !== "terms-and-conditions").map((n) => `https://x.com/${n}`)]);
+  // no guess keeps a promotion's or product's segment
+  const d = promoSiblingGuesses("https://x.com/promotions/welcome-offer/terms");
+  assert.ok(d.includes("https://x.com/terms"), d.join(" "));
+  assert.ok(d.every((u) => !/promotions|welcome|offer/.test(u)), d.join(" "));
+  for (const u of ["https://x.com/en/terms/", "https://x.com/terms-and-conditions", "https://x.com/preferences/terms", "https://x.com/", "not a url"]) assert.deepEqual(promoSiblingGuesses(u), [], u);
 });

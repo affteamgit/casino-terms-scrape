@@ -1,7 +1,7 @@
 // Everything the scraper asks Jev (TypeSafe AI): the two judgments, their wording, how the answers are read, and
 // the HTTP call. Jev supplies judgments; the code in terms.mjs decides what to do with them, and runs unchanged
 // when there is no key or the call fails.
-import { host, registrable, withinDomain, FILE_HOST, TERMS_TEXT } from "./links.mjs";
+import { host, registrable, withinDomain, FILE_HOST, TERMS_TEXT, readsLikeTerms } from "./links.mjs";
 
 const API = "https://api.typesafe.ai/v1/systemone";
 export const MODEL = "jev-1.14.0"; // pinned: aliases move when a new release ships
@@ -13,6 +13,11 @@ export const LINK_PICK_MIN = 0.2; // an option is tried when at least this likel
 export const LINK_NOUL_SURE_MIN = 0.4;
 export const LINK_PICK_SURE = 0.9;
 export const PAGE_NOUL_MIN = 0.7; // "this page is the general terms"
+// Real general terms came back 0.65-0.69 when the text began with the lobby's menu (rushgames, wonderlandcasino), bonus
+// and product terms 0.02-0.43: from PAGE_NOUL_BORDER up to PAGE_NOUL_MIN a page is asked the exclusion question too,
+// and accepted when Jev rules the exclusions out (not_general at most EXCLUSION_MAX) and the page reads like terms.
+export const PAGE_NOUL_BORDER = 0.5;
+export const EXCLUSION_MAX = 0.3;
 export const MAX_ENTRIES = 60;
 const PAGE_TEXT_CHARS = 6000;
 
@@ -120,14 +125,18 @@ export const linkSummary = (answers) => {
   return `link:${fmt(answers.has_terms?.noul)}/${probs && typeof probs === "object" ? fmt(Math.max(0, ...Object.values(probs))) : "?"}`;
 };
 
+// The page as Jev sees it. `core`: the text is what the page adds beyond the lobby's header and footer (coreText), not
+// the page's whole text.
+const pageState = ({ url, title, headings, text, core }) => ({ page: { url: clip(url, 200), title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS), core: !!core } });
+
 /**
  * The page judgment: is this document the general terms of the whole site. The URL (so Jev sees the path), the opening
  * of the page and its headings are enough. A product section's terms (elarabet's sportsbook terms read like general
  * terms) are not.
  */
-export function termsPageQuestion({ url, title, headings, text }) {
+export function termsPageQuestion(meta) {
   return {
-    state: { page: { url: clip(url, 200), title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS) } },
+    state: pageState(meta),
     questions: {
       is_terms: {
         type: "noul",
@@ -141,8 +150,32 @@ export function termsPageQuestion({ url, title, headings, text }) {
   };
 }
 
+/**
+ * The exclusion judgment, asked about a borderline page (is_terms from PAGE_NOUL_BORDER up to PAGE_NOUL_MIN) with the
+ * same state: is it anything other than the general terms of the whole site.
+ */
+export function exclusionQuestion(meta) {
+  return {
+    state: pageState(meta),
+    questions: {
+      not_general: {
+        type: "noul",
+        instructions: "Is `page` a promotion's or bonus terms, one product section's terms (sportsbook, poker, bingo, racing, live casino), a privacy or cookie policy, game or betting rules, a help article, or anything other than the general terms and conditions of the whole site?",
+        criteria: {
+          true: "a promotion's or bonus terms, the terms of one product section (sportsbook, poker, bingo, racing, live casino) of a site that also offers other products, a privacy or cookie policy, game or sports-betting rules, a help article, a lobby, a registration form, an error page, or any other page",
+          false: "the general terms and conditions, terms of service, terms of use or user agreement that govern a player's account, deposits, bets and withdrawals on the whole site, shown in full or as its opening sections",
+        },
+      },
+    },
+  };
+}
+
 export const acceptsPage = (answers) => !!answers && !!answers.is_terms && answers.is_terms.noul >= PAGE_NOUL_MIN;
-export const pageSummary = (answers) => answers ? `page:${fmt(answers.is_terms?.noul)}` : "off";
+/** A borderline page: Jev leans to the general terms, rules the exclusions out, and the text reads like terms. */
+export const acceptsBorderline = (answers, exclusion, text) => !!answers?.is_terms && answers.is_terms.noul >= PAGE_NOUL_BORDER
+  && !!exclusion?.not_general && exclusion.not_general.noul <= EXCLUSION_MAX && readsLikeTerms(text || "");
+/** The `jev` column's note for a page: `page:<noul>`, and ` excl:<noul>` when the exclusion question was asked. */
+export const pageSummary = (answers, exclusion) => answers ? `page:${fmt(answers.is_terms?.noul)}${exclusion ? ` excl:${fmt(exclusion.not_general?.noul)}` : ""}` : "off";
 
 export const LOBBY_P_MIN = 0.8; // the top lobby option must be this likely ...
 export const LOBBY_CONFIDENCE_MIN = 0.7; // ... and the answer's confidence this high, before a lobby is given a status
