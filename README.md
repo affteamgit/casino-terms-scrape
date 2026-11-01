@@ -35,7 +35,8 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 
 1. Run the local pass (see "Locally (the first pass)" below) and merge: `node src/merge.mjs` → `out/results.csv`.
 2. `node src/retry-ids.mjs out/results.csv` writes `input/retry-ids.txt`: every casino not reached, or reached without terms
-   (`no_url` and `parked` rows have nothing to retry). Commit and push it.
+   (`no_url`, `parked`, `closed` and `not_casino` rows have nothing to retry). It also lists `ok` rows whose `jev` column says
+   `error:` (Jev did not judge them) as `jev-failed`, whether or not terms were found. Commit and push it.
 3. Add the `TYPESAFE_API_KEY` repository secret (Repository settings → Secrets) so Jev runs on Actions too; without
    it the `jev` column says `off`. Then Actions → **Scrape casino terms** → `only_ids` = `@input/retry-ids.txt`.
 4. Download the **results** artifact and merge the two: `mkdir -p out/final && cp out/results.csv
@@ -73,19 +74,19 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 |---|---|
 | `id`, `source`, `casino`, `review_url` | the casino (id = the input row its job started from; `source` lists every site it appears on, e.g. `casinoguru+lcb`) |
 | `start_type`, `start_url` | `tracking` link, or the casino `domain` when the link was N/A |
-| `status` | `ok`, `geo_blocked` (the page says so), `blocked_http` (bare 403/451), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `maintenance` (a bare page that says the site is down for maintenance), `load_error`, `connect_error`, `timeout` (no result within the 20-minute casino budget; its browser is closed), `crash` (the run threw; `error` says why), `no_url` |
+| `status` | `ok`, `geo_blocked` (the page says so, in English, Portuguese, Russian, Spanish, German, French, Italian or Turkish), `blocked_http` (bare 403/451, or an edge/WAF refusal page), `challenge` (bot check), `stuck_on_tracker`, `dead_or_empty`, `parked` (a for-sale or parking page, or a review site that says it runs no casino; `error` says `not casino: ...`), `closed` (a short page that says the site has ceased: "closed for business", "no longer available"), `not_casino` (Jev judged the page not an online gambling operator's site: an affiliate, review or news site, a blog, a template, a software vendor; terminal like `parked`), `maintenance` (a bare page that says the site is down for maintenance, or Jev judged the lobby temporarily unavailable; retried), `load_error`, `connect_error`, `timeout` (no result within the 20-minute casino budget; its browser is closed), `crash` (the run threw; `error` says why), `no_url` |
 | `final_url`, `final_domain`, `redirect_chain` | where the tracking link landed |
 | `exit_country`, `ip`, `ip_country`, `countries_tried` | the proxy country that got in (`dc-` prefix = datacenter proxy, `direct` = Browserless's own egress), the IP the sites saw, everything tried |
 | `scraped_at` | UTC timestamp |
 | `terms_found` | `yes` when a terms page was read; `no` means no terms link or clickable text on the lobby, or every candidate was thin, still loading or a bot wall |
 | `terms_tried` | the terms candidates that failed, with the reason, for rows with `terms_found = no` |
 | `mb` | megabytes moved through the proxy for this casino, across all its sessions (Browserless bills 6 units per residential MB) |
-| `jev` | what Jev (TypeSafe AI) answered: `link:<P there is a terms link>/<P of its pick>`, `page:<P this page is the terms>` per page it judged, `off` without a key, `error:…` when the call failed |
-| `pages` | which pages were read: footer, terms, payments, KYC/AML |
+| `jev` | what Jev (TypeSafe AI) answered: `link:<P there is a terms link>/<P of its pick>`, `page:<P this page is the terms>` per page it judged, `lobby:<option>:<P>` when the search ended without the terms (no terms link on the lobby, or every candidate rejected) and Jev said what the page is (at P 0.8 or more the option gives the status: `geo_or_regulatory_notice` → `geo_blocked`, `closed_or_suspended`, a permanent closure only, → `closed`, `temporarily_unavailable`, maintenance, an outage or a suspension, → `maintenance`, `parked_or_for_sale` → `parked`, `not_gambling_site` → `not_casino`, `error_or_bot_wall` → `blocked_http`; `gambling_site` leaves `ok`), `off` without a key, `error:…` when the call failed |
+| `pages` | which pages were read: footer, terms, payments, KYC/AML; the terms entry says how it was reached (`(via …)`) and read (`(hidden text)`, `(frame)` for a document in an iframe, `(pdf)`, `(docx)` for a Word file); a lobby Jev classified has no payments or KYC pages |
 | `licence_numbers`, `jurisdictions` | pattern-matched from the text |
 | `q_licence`, `q_owner`, `q_withdrawal_limits`, `q_withdrawal_time`, `q_installments`, `q_kyc`, `q_restricted` | raw quotes, one per line, each ending with ‹the page it came from› |
 | `footer` | the landing page's footer text |
-| `error` | the HTTP status or error for failed rows |
+| `error` | the HTTP status or error for failed rows; `Jev: the lobby is <status>` when Jev's lobby judgment gave the status |
 
 ## How it reads a casino
 
@@ -100,17 +101,30 @@ Each casino's job starts from its CasinoGuru link, else AskGamblers, else LCB, e
 4. Open the terms. Casinos always have them, so the search escalates until something is found: every anchor is
    scored (`src/links.mjs`) and up to three general-terms candidates are tried; where the footer routes from plain
    elements instead of anchors (Lebull) the element that reads like the terms link is clicked; the registration
-   page is scanned, since it always links the terms a player accepts (PlayGrand); the sitemap and the paths
-   casinos commonly use are opened in the browser (Rokubet); and only then a promotion's terms page is taken. A
+   page is scanned, since it always links the terms a player accepts (PlayGrand), and a sign-up link or button that
+   opens a registration modal instead is clicked and the modal's terms link or terms text tried (`via signup-modal`);
+   up to two of the lobby's own legal, support or help, FAQ, about, info or contact pages (in that order) are read like the lobby
+   (goluckycasino.com hangs its legal pages off `/support`), and the terms they link are tried (`via help-page`); the
+   sitemap and the paths casinos commonly use are opened in the browser (Rokubet), the general terms next to a rejected bonus page first
+   (`/en/terms/bonus/` -> `/en/terms/`); and only then a link scored as a promotion's terms is opened, which only Jev
+   may accept, so it is skipped while Jev is off or down. A
    page that only asks for a country (unibet.com) is followed to the brand's regional site first. A document counts
    only once its text has stopped growing, is not a bot wall or a font placeholder, and reads like terms (a
-   help-centre home page does not). The `pages` column says how the terms were reached
-   (`via click`, `via signup-page`, `via guess`, `via promo-terms`), and `terms_tried` what failed. A lobby reached
+   help-centre home page does not). The `pages` column says how the terms were reached (`via click`,
+   `via signup-page`, `via signup-modal`, `via help-page`, `via guess`, `via low-score link`), and `terms_tried` what
+   failed. A lobby reached
    without its terms (a bot wall on the terms page through that exit) is kept only as a fallback while the other
-   exit countries are tried. Jev is shown the footer's links and clickable texts and asked which is the general terms;
+   exit countries are tried; the help-page and sign-up-modal steps and Jev's lobby question run on the first exit that
+   reached the lobby only, and the search opens nothing more once 18 of the casino's 20 minutes are spent. Jev is shown the footer's links and clickable texts and asked which is the general terms;
    when it is confident one exists its pick is tried first (`via jev`). A page the terms pattern rejects is judged by
-   Jev before it is given up on. Terms hidden in collapsed sections are read from the DOM (`hidden text`), and PDFs
-   are read with pdf.js (`pdf`).
+   Jev before it is given up on; Jev reads what the page adds beyond the lobby's header and footer, and a borderline
+   answer (0.5 to 0.7) is accepted only when Jev also rules out a promotion's, a product's or a policy page
+   (`page:0.65 excl:0.12` in the `jev` column). A link the heuristic does not rank as the general terms (a product's
+   terms, a Jev pick it scores 0 or less) and a tab or frame on another site are Jev's to accept: while Jev is down (a
+   call failed after its retries) they are skipped, and only without a key does the pattern decide such a link. A page
+   that is still the lobby's shell, through a link, a tab or a click, is waited on until its document arrives and is
+   never the terms itself. Terms hidden in collapsed sections are read from the DOM (`hidden text`), a document in an
+   iframe from the frame (`frame`), and PDFs with pdf.js (`pdf`).
 5. Follow the page's own links to payments and KYC/AML pages the same way.
 6. Pull every sentence matching the keyword rules in `src/extract.mjs`.
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { host, termsScore, termsCandidates, otherDocs, regionalSites, isPdf, docLinks, siblingGuesses, namedTermsPage } from "../src/links.mjs";
+import { host, termsScore, termsCandidates, otherDocs, regionalSites, isPdf, isDoc, docLinks, siblingGuesses, promoSiblingGuesses, SIBLING_NAMES, namedTermsPage, FILE_HOST } from "../src/links.mjs";
 
 const L = (text, href, footer = false) => ({ text, href, footer });
 
@@ -87,18 +87,19 @@ test("Nordic link text and /rules: spinit2's \"Vilkår og betingelser\" is the t
   assert.equal(termsCandidates([L("Käyttöehdot", "https://x.fi/info", true)], "https://x.fi/").length, 1);
 });
 
-test("docLinks: a thin terms page's link to its document; privacy PDFs and other domains' PDFs are not chosen", () => {
+test("docLinks: a thin terms page's link to its document; privacy PDFs are not chosen, other hosts' PDFs come after the casino's own", () => {
   const page = "https://clubscasino.com/terms-of-use/";
   const pdf = "https://clubscasino.com/wp-content/uploads/2026/07/KHK-Games-Clubs-Poker-Terms-of-Use-06_30_2026.pdf";
   const links = [L("Home", "https://clubscasino.com/"), L("Games", "https://clubscasino.com/games/"), L("Privacy Policy", "https://clubscasino.com/wp-content/uploads/2026/07/Privacy-Policy.pdf"),
     L("Download", pdf), L("Terms of Use", page), L("Terms", "https://regulator.gov/terms.pdf"), L("Contact", "mailto:support@clubscasino.com")];
-  assert.deepEqual(docLinks(links, page).map((l) => l.href), [pdf]);
-  assert.deepEqual(docLinks([L("Terms of Use", "https://other.com/terms-of-use.pdf"), L("Download", "https://other.com/x")], page), [], "an off-domain PDF is not the casino's");
+  assert.deepEqual(docLinks(links, page).map((l) => l.href), [pdf, "https://regulator.gov/terms.pdf"], "the page vouches for a PDF on another host, read only after the casino's own");
+  assert.deepEqual(docLinks([L("Terms of Use", "https://other.com/terms-of-use"), L("Download", "https://other.com/x")], page), [], "an off-domain page is not the casino's");
+  assert.deepEqual(docLinks([L("Terms of Use", "https://other.com/terms-of-use.pdf")], page, "elsewhere.com"), [], "a page on another site than the casino's vouches for no other host's PDF");
   assert.deepEqual(docLinks([L("Download", "https://d1abc.cloudfront.net/legal/terms.pdf")], page).map((l) => l.href), ["https://d1abc.cloudfront.net/legal/terms.pdf"], "a file host is");
   assert.deepEqual(docLinks([L("View document", "https://clubscasino.com/wp-content/uploads/2026/terms-of-use"), L("Read more", "https://clubscasino.com/blog/win-big"), L("Open", "https://clubscasino.com/legal/doc-7")], page).map((l) => l.href),
     ["https://clubscasino.com/wp-content/uploads/2026/terms-of-use"], "a bare verb needs a document-shaped target: Read more -> a blog post is not chosen");
   assert.deepEqual(docLinks([L("Download", "https://clubscasino.com/files/t.docx")], page).length, 1);
-  assert.deepEqual(docLinks([L("Terms of Use", "https://evilclubscasino.com/terms.pdf"), L("Download", "https://evilclubscasino.com/uploads/t.pdf")], page), [], "a lookalike domain is not the casino");
+  assert.deepEqual(docLinks([L("Terms of Use", "https://evilclubscasino.com/terms"), L("Download", "https://evilclubscasino.com/uploads/t")], page), [], "a lookalike domain's page is not the casino's");
   assert.equal(docLinks([L("Download", "https://cdn.clubscasino.com/t.pdf")], page).length, 1, "a subdomain is");
   assert.deepEqual(docLinks([L("View", "https://clubscasino.com/profiles/me"), L("Open", "https://clubscasino.com/social-media-x"), L("Read", "https://clubscasino.com/wp-content/media/terms")], page).map((l) => l.href), ["https://clubscasino.com/wp-content/media/terms"], "document-path words are whole path segments");
   assert.equal(docLinks(Array.from({ length: 6 }, (_, i) => L("Download", `https://clubscasino.com/f${i}.pdf`)), page).length, 2, "two at most");
@@ -211,4 +212,84 @@ test("a caption that names a product without the casino ranks below the general 
   assert.equal(c[0].href, "https://elarabet.com/terms-and-conditions");
   assert.equal(termsScore(L("Casino & Sports Terms", "https://elarabet.com/terms-and-conditions", true), page), general, "a caption that also says casino keeps its score");
   assert.equal(termsScore(L("Poker Terms", "https://x.com/poker/terms", true), "https://x.com/"), termsScore(L("Terms", "https://x.com/poker/terms", true), "https://x.com/") , "caption and path naming the product: one penalty");
+});
+
+test("termsCandidates: a caption alone in a language the path does not speak is a candidate (Serbian, German, Japanese, Turkish, Thai)", () => {
+  for (const text of ["Uslovi korišćenja", "Allgemeine Geschäftsbedingungen", "利用規約", "Şartlar ve Koşullar", "ข้อกำหนดและเงื่อนไข", "الشروط والأحكام", "이용약관", "Điều khoản sử dụng"]) {
+    const c = termsCandidates([L(text, "https://x.com/p/12", true)], "https://x.com/");
+    assert.ok(c.length === 1 && c[0].score > 0, `${text}: ${JSON.stringify(c)}`);
+  }
+  // game rules in Turkish (possessive form) are not terms
+  assert.deepEqual(termsCandidates([L("Oyun Kuralları", "https://x.com/p/12", true)], "https://x.com/"), []);
+  assert.deepEqual(termsCandidates([L("Blackjack", "https://x.com/p/12", true)], "https://x.com/"), []);
+});
+
+test("termsCandidates: rules and policy captions in other languages are not the terms; terms, T&Cs and 'Sport & Casino' are judged by their words", () => {
+  const cand = (text, path = "/p/12") => termsCandidates([L(text, `https://x.com${path}`, true)], "https://x.com/");
+  for (const [t, p] of [["Adatvédelmi szabályzat", "/adatvedelem"], ["Adatkezelési szabályzat", "/p/12"], ["Adatkezelési tájékoztató", "/adatkezeles"], ["Politika privatnosti", "/privatnost"], ["游戏规则", "/p/12"], ["Gizlilik Politikası", "/p/12"]]) assert.deepEqual(cand(t, p), [], t);
+  // "igre" is "of the game" and "igre na sreću" is gambling itself: the Balkan general terms are "Opći uvjeti igre"
+  for (const t of ["Opšti uslovi", "Szabályzat", "Pravila", "Általános szerződési feltételek", "T&Cs", "Opći uvjeti igre", "Opšti uslovi igre", "Pravila igre na sreću"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
+  assert.deepEqual(cand("Sport & Casino"), []);
+});
+
+test("promoSiblingGuesses: the general terms next to a rejected bonus or product page", () => {
+  const a = promoSiblingGuesses("https://x.com/en/terms/bonus/");
+  assert.ok(a.includes("https://x.com/en/terms/"), a.join(" "));
+  const b = promoSiblingGuesses("https://x.com/help/bonus-terms-and-conditions");
+  assert.ok(b.includes("https://x.com/help/terms-and-conditions") && b.includes("https://x.com/help/terms"), b.join(" "));
+  assert.equal(b[0], "https://x.com/help/terms-and-conditions", "the segment without its promotion word comes first");
+  assert.deepEqual(b.filter((u) => u.startsWith("https://x.com/help/")).length, b.length, "all in the page's directory");
+  assert.ok(!b.includes("https://x.com/help"), "a help directory alone is not a terms guess");
+  assert.equal(new Set(b).size, b.length, "unique");
+  // a product's terms, with the query and hash dropped
+  const c = promoSiblingGuesses("https://x.com/sportsbook-terms-and-conditions?lang=en#top");
+  assert.deepEqual(c, ["https://x.com/terms-and-conditions", ...SIBLING_NAMES.filter((n) => n !== "terms-and-conditions").map((n) => `https://x.com/${n}`)]);
+  // no guess keeps a promotion's or product's segment
+  const d = promoSiblingGuesses("https://x.com/promotions/welcome-offer/terms");
+  assert.ok(d.includes("https://x.com/terms"), d.join(" "));
+  assert.ok(d.every((u) => !/promotions|welcome|offer/.test(u)), d.join(" "));
+  // a bare /rules guess is left out: the pattern would read any rules page as terms
+  for (const u of ["https://x.com/sportsbook/rules", "https://x.com/tournament-rules", "https://x.com/rules/bonus"]) {
+    const g = promoSiblingGuesses(u);
+    assert.ok(g.length && !g.some((x) => /\/rules\/?$/.test(new URL(x).pathname)), `${u}: ${g.join(" ")}`);
+  }
+  for (const u of ["https://x.com/en/terms/", "https://x.com/terms-and-conditions", "https://x.com/preferences/terms", "https://x.com/", "not a url"]) assert.deepEqual(promoSiblingGuesses(u), [], u);
+  // the path without the promotion names the terms (/en/terms/): the siblings go beside that terms directory, not into it
+  assert.ok(a.includes("https://x.com/en/terms-and-conditions") && a.includes("https://x.com/en/general-terms"), a.join(" "));
+  assert.ok(!a.some((u) => u.startsWith("https://x.com/en/terms/") && u !== "https://x.com/en/terms/"), a.join(" "));
+  const e = promoSiblingGuesses("https://x.com/rules/bonus");
+  assert.ok(e.includes("https://x.com/terms-and-conditions") && !e.some((u) => u.startsWith("https://x.com/rules/")), e.join(" "));
+});
+
+// winner.ro / eliteslots.ro: the terms hub's "Descarcă documentul" -> a PDF on y6v9r7t5.b-cdn.net; ecasino.cz: the terms as
+// a .docx on ik.imagekit.io. The casino's own page vouches for the document it links, whatever host serves it.
+test("docLinks: a PDF or DOCX linked from the casino's own page counts whatever host serves it; other documents keep the host rule", () => {
+  const page = "https://casino.example/terms";
+  const pdf = "https://y6v9r7t5.b-cdn.net/documents/termsAndConditions/2/ro/Terms%20and%20Conditions.pdf", docx = "https://ik.imagekit.io/x/obchodni-podminky.docx";
+  assert.deepEqual(docLinks([L("Descarcă documentul", pdf)], page).map((l) => l.href), [pdf]);
+  assert.deepEqual(docLinks([L("Všeobecné obchodní podmínky", docx)], page).map((l) => l.href), [docx]);
+  assert.deepEqual(docLinks([L("Terms and Conditions", "https://other.example/terms-and-conditions")], page), [], "an HTML page on another domain");
+  assert.deepEqual(docLinks([L("Bonus terms", "https://y6v9r7t5.b-cdn.net/docs/bonus-terms.pdf")], page), [], "a promotion's PDF");
+  assert.deepEqual(docLinks([L("Privacy Policy", "https://y6v9r7t5.b-cdn.net/docs/privacy.pdf")], page), [], "a privacy PDF");
+  // The casino's domain given apart from the page: a page on another site vouches only for its own host and the file hosts.
+  assert.deepEqual(docLinks([L("Terms", pdf)], "https://partner.example/terms", "casino.example").map((l) => l.href), [pdf], "b-cdn.net is a file host");
+  assert.deepEqual(docLinks([L("Terms", "https://elsewhere.example/t.pdf")], "https://partner.example/terms", "casino.example"), []);
+  assert.deepEqual(docLinks([L("Terms", "https://partner.example/t.pdf")], "https://partner.example/terms", "casino.example").length, 1, "the page's own host");
+});
+
+test("FILE_HOST: CDN and storage hosts casinos serve their documents from", () => {
+  for (const h of ["cdn1.svenskaspel.net", "cdn.x.com", "x.b-cdn.net", "ik.imagekit.io", "res.cloudinary.com", "x.fra1.digitaloceanspaces.com", "x.azureedge.net", "x.akamaized.net", "x.global.fastly.net", "d1.cloudfront.net"]) assert.ok(FILE_HOST.test(h), h);
+  for (const h of ["cdnx.com", "casino.example", "evilb-cdn.net", "notcloudinary.com"]) assert.ok(!FILE_HOST.test(h), h);
+});
+
+test("isDoc: a PDF or a DOCX file", () => {
+  for (const u of ["https://x.com/t.pdf", "https://x.com/t.docx?v=2", "https://x.com/T.DOCX#p"]) assert.equal(isDoc(u), true, u);
+  for (const u of ["https://x.com/t.doc", "https://x.com/docx/terms", "https://x.com/t.pdfx"]) assert.equal(isDoc(u), false, u);
+});
+
+// "Pravila igre" / "Pravila igara" (game rules, Serbian/Croatian) are no terms caption; the general terms "Opći uvjeti igre" are.
+test("termsCandidates: a game-rules caption is not a terms candidate", () => {
+  const cand = (text, path = "/p/12") => termsCandidates([L(text, `https://x.com${path}`, true)], "https://x.com/");
+  for (const t of ["Pravila igre", "Pravila igara", "PRAVILA IGRE"]) assert.ok(!cand(t).some((c) => c.score > 0), t);
+  for (const t of ["Opći uvjeti igre", "Opšti uslovi"]) assert.ok(cand(t).length === 1 && cand(t)[0].score > 0, t);
 });

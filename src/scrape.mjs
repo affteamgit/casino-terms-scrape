@@ -10,10 +10,10 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { chromium } from "playwright-core";
 import { stringify } from "csv-stringify/sync";
 import { extract, licenceNumbers, jurisdictions } from "./extract.mjs";
-import { host, termsCandidates, otherDocs, regionalSites } from "./links.mjs";
+import { host, termsCandidates, regionalSites } from "./links.mjs";
 import { exitLookup } from "./exit.mjs";
 import { sessions, withBudget } from "./budget.mjs";
-import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino } from "./terms.mjs";
+import { sleep, clip, TRACKER_HOSTS, lobbyStatus, settle, readLobby, bodyText, readDoc, fetchTerms, marketplaceLobby, notCasino, otherDocsFor } from "./terms.mjs";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const SHARD = Number(arg("--shard", 0));
@@ -142,7 +142,8 @@ async function installBlocklist(page) {
 
 // Every open session, by job id, so a casino that runs past its budget has its browser closed (budget.mjs).
 const live = sessions();
-async function attempt(job, url, country, type) {
+// `search`: what fetchTerms is told about the casino's run: its `deadline` and whether this is the `firstExit` to reach the lobby.
+async function attempt(job, url, country, type, search = {}) {
   const browser = await connect(country, type);
   await live.add(job.id, browser); // a casino already timed out: closed, and this throws
   try {
@@ -160,9 +161,11 @@ async function attempt(job, url, country, type) {
     const text = await settle(page, httpStatus);
     const finalUrl = page.url();
     const anchors = await page.evaluate(() => [...document.querySelectorAll("a[href]")].map((a) => ({ href: a.href, text: (a.innerText || "").trim().slice(0, 80), footer: !!a.closest("footer, [class*=footer i], #footer") }))).catch(() => []);
+    // ok, parked, closed, geo_blocked, blocked_http, challenge, stuck_on_tracker, maintenance or dead_or_empty (not_casino comes from Jev, below)
     const status = lobbyStatus({ text, httpStatus, finalUrl, links: anchors });
     // The IP the casino saw is recorded for reached casinos only; a blocked attempt should cost seconds, not a minute.
     if (status === "parked") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "parked or for-sale domain" };
+    if (status === "closed") return { status, finalUrl, chain, ip: "", ip_country: "", httpStatus, error: "the site says it has closed" };
     const { ip, ip_country } = status !== "ok" ? { ip: "", ip_country: "" } : type === "local" ? await localExit() : await whereAmI(context);
     const base = { status, finalUrl, chain, ip, ip_country, httpStatus };
     if (status !== "ok") return base;
@@ -200,16 +203,17 @@ async function attempt(job, url, country, type) {
     if (nc) return { ...base, status: "parked", error: `not casino: ${nc}` };
     const docs = [{ label: "footer", text: lobby.footer }];
     const jev = { notes: [] };
-    const terms = await fetchTerms(page, lobby, jev, { unblock: meter.unblock });
-    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.pdf ? " (pdf)" : ""}`, text: terms.text.slice(0, 250000) });
-    for (const p of otherDocs(lobby.links, lobby.url, terms.href ? [terms.href] : [])) {
+    const terms = await fetchTerms(page, lobby, jev, { unblock: meter.unblock, ...search });
+    if (terms.text) docs.push({ label: `terms ${terms.href}${terms.via !== "link" ? ` (via ${terms.via})` : ""}${terms.hidden ? " (hidden text)" : ""}${terms.frame ? " (frame)" : ""}${terms.pdf ? " (pdf)" : ""}${terms.docx ? " (docx)" : ""}`, text: terms.text.slice(0, 250000) });
+    for (const p of otherDocsFor(lobby, terms)) {
       try {
         await page.goto(p.href, { waitUntil: "domcontentloaded", timeout: 45000 });
         const d = await readDoc(page);
         docs.push({ label: `${p.kind} ${p.href}`, text: d.text.slice(0, 250000) });
       } catch (e) { docs.push({ label: `${p.kind} ${p.href} (failed: ${clip(e.message, 80)})`, text: "" }); }
     }
-    return { ...base, finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
+    // Jev says the lobby is not a casino's (or a notice, a closed or parked site): that is the status, with no terms.
+    return { ...base, searched: true, status: terms.lobbyClass || base.status, ...(terms.lobbyClass && { error: `Jev: the lobby is ${terms.lobbyClass}` }), finalUrl: base.finalUrl, footer: lobby.footer, docs, termsTried: terms.tried, walled: !!terms.walled, walledEarly: !!terms.walledEarly, mb: meter.bytes / 1048576, jev: jev.notes.join(" ") };
   } finally { live.remove(job.id, browser); await Promise.race([browser.close().catch(() => {}), sleep(10000)]); } // a session Browserless already killed may never answer
 }
 
@@ -225,6 +229,11 @@ async function run(job) {
   // A lobby reached without its terms (a bot wall on the terms page via this exit, Flamez) is kept only as a
   // fallback: another exit country may be served the terms, so the rotation goes on.
   let fallback = null, noTerms = 0, mbTotal = 0;
+  // The terms search stops opening pages 2 minutes before the casino's budget runs out, so a reached casino is written as
+  // reached, not as a timeout; its help-page, sign-up-modal and lobby-question steps run on the first exit that reached
+  // the lobby only (`reached`: an exit's search has run past the lobby's candidates; one walled on a candidate page did not).
+  const deadline = Date.now() + CASINO_BUDGET - TERMS_RESERVE;
+  let reached = false;
   outer: for (const phase of PROXY_PLAN) for (let u = 0; u < urls.length; u++) {
     const url = urls[u];
     // The datacenter phase is a cheap first try: a casino that blocked it through the resolved link gets the bare
@@ -236,7 +245,8 @@ async function run(job) {
       if (tried.length >= 10) break outer; // ten sessions is the budget for one casino, across phases and URLs
       if (live.ended(job.id)) break outer; // timed out: its row is written, no more sessions
       tried.push(`${tag(c)}${u === 0 ? "" : "(" + (url === resolved ? "resolved" : "domain") + ")"}`);
-      try { r = await attempt(job, url, c, phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
+      try { r = await attempt(job, url, c, phase.type, { deadline, firstExit: !reached }); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
+      if (r.searched && !r.walledEarly) reached = true;
       mbTotal += r.mb || 0;
       if (r.status === "ok") {
         if (hasTerms(r)) break outer;
@@ -246,7 +256,7 @@ async function run(job) {
       }
       // A bare 403/451 is tried from every country: Rokubet refuses Canada and Germany but serves New Zealand, and
       // a blocked session costs little. Only a challenge page (bot wall, not geo) is the same from everywhere.
-      if (r.status === "parked") break outer; // a for-sale page is the same from every exit; an exit that reached the casino earlier still stands as the fallback
+      if (r.status === "parked" || r.status === "closed" || r.status === "not_casino") break outer; // a for-sale or closed site is the same from every exit; an exit that reached the casino earlier still stands as the fallback
       if (r.status === "challenge" && ++walls >= 2) break;
       const tunnel = r.status === "load_error" && /ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED/.test(r.error || "");
       if (tunnel || r.status === "stuck_on_tracker") {
@@ -260,7 +270,8 @@ async function run(job) {
           // The proxy refuses the casino's own domain (it does for some gambling sites). Last resort: no proxy, from
           // the Browserless region's egress; the row then records that country, which the casino may well block.
           tried.push("direct");
-          try { r = await attempt(job, url, "direct", phase.type); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
+          try { r = await attempt(job, url, "direct", phase.type, { deadline, firstExit: !reached }); } catch (e) { r = { status: "connect_error", error: clip(redact(e.message), 200) }; }
+          if (r.searched && !r.walledEarly) reached = true;
           mbTotal += r.mb || 0;
           if (r.status === "ok") { if (hasTerms(r)) break outer; fallback ??= { r, exit: "direct" }; }
         }
@@ -304,7 +315,7 @@ let next = 0, n = 0;
 // A CDP call on a session Browserless has killed (ten-minute cap) can hang forever; with every worker stuck that way
 // Node finds nothing left to run and exits with code 13 (shard 1 of the first full run). The keepalive timer holds
 // the process, and a casino that exceeds its budget is written as "timeout" while its worker moves on.
-const CASINO_BUDGET = 20 * 60000;
+const CASINO_BUDGET = 20 * 60000, TERMS_RESERVE = 2 * 60000;
 const keepalive = setInterval(() => {}, 60000);
 async function worker() {
   while (next < jobs.length && Date.now() < DEADLINE) {

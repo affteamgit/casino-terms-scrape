@@ -96,6 +96,7 @@ tr.detail td { background: var(--bg); padding: 16px 18px 20px; border-top: 1px d
     <p class="lede">Each row is one casino the scraper visited. Open a row to read the raw quotes it pulled from the footer, terms, payments and KYC pages, each tagged with the page it came from.</p>
   </header>
   <section class="strip" id="strip"></section>
+  <section class="field" id="notcasino" hidden></section>
   <section class="controls">
     <input id="search" type="search" placeholder="Filter by casino, licence, jurisdiction…" aria-label="Filter rows">
     <select id="status" aria-label="Filter by status"><option value="">All statuses</option></select>
@@ -112,8 +113,8 @@ tr.detail td { background: var(--bg); padding: 16px 18px 20px; border-top: 1px d
 const DATA = JSON.parse(document.getElementById("data").textContent);
 const FIELDS = ${JSON.stringify(QUOTE_FIELDS)};
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const CLASS = { ok: "ok", geo_blocked: "warn", blocked_http: "bad", challenge: "bad", stuck_on_tracker: "warn", dead_or_empty: "bad", maintenance: "warn", parked: "warn", load_error: "bad", connect_error: "bad", no_url: "bad" };
-const LABEL = { ok: "ok", geo_blocked: "geo-blocked", blocked_http: "blocked (http)", challenge: "bot check", stuck_on_tracker: "stuck on tracker", dead_or_empty: "dead / empty", maintenance: "maintenance", parked: "parked", load_error: "load error", connect_error: "connect error", no_url: "no url" };
+const CLASS = { ok: "ok", geo_blocked: "warn", blocked_http: "bad", challenge: "bad", stuck_on_tracker: "warn", dead_or_empty: "bad", maintenance: "warn", parked: "warn", closed: "warn", not_casino: "warn", load_error: "bad", connect_error: "bad", no_url: "bad" };
+const LABEL = { ok: "ok", geo_blocked: "geo-blocked", blocked_http: "blocked (http)", challenge: "bot check", stuck_on_tracker: "stuck on tracker", dead_or_empty: "dead / empty", maintenance: "maintenance", parked: "parked", closed: "closed", not_casino: "not a casino", load_error: "load error", connect_error: "connect error", no_url: "no url" };
 
 const strip = document.getElementById("strip");
 const tally = (f) => DATA.reduce((a, r) => (a[f(r)] = (a[f(r)] || 0) + 1, a), {});
@@ -124,6 +125,16 @@ const stats = [
   ["Exit countries", Object.entries(ex).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + " " + n).join(" · ")],
 ];
 strip.innerHTML = stats.map(([l, v]) => '<div class="stat"><b>' + esc(v) + "</b><span>" + esc(l) + "</span></div>").join("");
+
+// Reached and classified, with nothing to read: a for-sale domain, a closed site, or a site that is not an operator's.
+const NOT_OPERATING = ["parked", "closed", "not_casino"];
+const gone = DATA.filter((r) => NOT_OPERATING.includes(r.status));
+if (gone.length) {
+  const sec = document.getElementById("notcasino");
+  sec.hidden = false;
+  sec.innerHTML = "<h3><span>Not a casino / not operating</span><span>" + gone.length + "</span></h3>" +
+    gone.map((r) => '<p class="q"><span class="pill warn">' + esc(LABEL[r.status]) + "</span> " + esc(r.casino) + ' <span class="mono id">' + esc(r.id) + " · " + esc(r.final_domain || r.start_url) + (r.error ? " · " + esc(r.error) : "") + "</span></p>").join("");
+}
 
 const statusSel = document.getElementById("status");
 for (const s of Object.keys(st).sort()) statusSel.insertAdjacentHTML("beforeend", '<option value="' + esc(s) + '">' + esc(LABEL[s] || s) + " (" + st[s] + ")</option>");

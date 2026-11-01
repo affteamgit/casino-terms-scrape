@@ -1,7 +1,7 @@
 // Everything the scraper asks Jev (TypeSafe AI): the two judgments, their wording, how the answers are read, and
 // the HTTP call. Jev supplies judgments; the code in terms.mjs decides what to do with them, and runs unchanged
 // when there is no key or the call fails.
-import { host, registrable, withinDomain, FILE_HOST } from "./links.mjs";
+import { host, registrable, withinDomain, FILE_HOST, TERMS_TEXT, readsLikeTerms } from "./links.mjs";
 
 const API = "https://api.typesafe.ai/v1/systemone";
 export const MODEL = "jev-1.14.0"; // pinned: aliases move when a new release ships
@@ -13,6 +13,11 @@ export const LINK_PICK_MIN = 0.2; // an option is tried when at least this likel
 export const LINK_NOUL_SURE_MIN = 0.4;
 export const LINK_PICK_SURE = 0.9;
 export const PAGE_NOUL_MIN = 0.7; // "this page is the general terms"
+// Real general terms came back 0.65-0.69 when the text began with the lobby's menu (rushgames, wonderlandcasino), bonus
+// and product terms 0.02-0.43: from PAGE_NOUL_BORDER up to PAGE_NOUL_MIN a page is asked the exclusion question too,
+// and accepted when Jev rules the exclusions out (not_general at most EXCLUSION_MAX) and the page reads like terms.
+export const PAGE_NOUL_BORDER = 0.5;
+export const EXCLUSION_MAX = 0.3;
 export const MAX_ENTRIES = 60;
 const PAGE_TEXT_CHARS = 6000;
 
@@ -22,19 +27,47 @@ export const jevEnabled = () => !!key();
 const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
 const path = (u) => { try { const x = new URL(u); return x.pathname + x.search; } catch { return u; } };
 const slug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
-const LEGAL = /terms|conditions|\btos\b|legal|agreement|rules|policy|privacy|regulamin|\bagb\b|bedingungen|condi|termos/i;
+// A non-footer link is shown to Jev only when it reads legal: those words, or the terms words of any language.
+const LEGAL = new RegExp(`terms|conditions|\\btos\\b|legal|agreement|rules|policy|privacy|regulamin|\\bagb\\b|bedingungen|condi|termos|${TERMS_TEXT.source}`, "i");
 
-/** One request. null without a key; the answers object otherwise; throws on failure after one retried 429. */
-export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fetch } = {}) {
+const RETRY_DELAYS = [2000, 5000, 10000]; // waits before attempts 2, 3 and 4
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Overloaded or failing on Jev's side (the 48-minute 529 outage of the full run): worth another try. Any other 4xx is not. */
+const retryable = (status) => status === 429 || status >= 500;
+const RETRY_AFTER_MAX = 30; // seconds: a longer retry-after is ignored in favour of the schedule
+/** The wait a response asks for with `retry-after` (seconds, at most RETRY_AFTER_MAX), in ms; null when absent, unreadable or longer. */
+const retryAfter = (res) => {
+  const v = res.headers?.get?.("retry-after");
+  const n = v === null || v === undefined || v.trim() === "" ? NaN : Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= RETRY_AFTER_MAX ? n * 1000 : null;
+};
+
+/**
+ * One request. null without a key; the answers object otherwise. A 429, a 5xx (529 overloaded included) or a network
+ * failure is tried again after 2 s, 5 s and 10 s (four attempts); the last failure is thrown as it came, so the `jev`
+ * column's `error:jev http 529: ...` note stays what `retry-ids` looks for. A `retry-after` of up to 30 s replaces the
+ * schedule's wait for that attempt. Any other 4xx and a malformed answer throw at once.
+ * `fetch` and `sleep` are for the tests.
+ */
+export async function askJev(state, questions, { timeoutMs = 20000, fetch: f = globalThis.fetch, sleep: s = defaultSleep } = {}) {
   if (!key()) return null;
+  let asked = null; // the previous response's retry-after, in ms
   for (let i = 0; ; i++) {
-    const res = await fetchFn(API, { method: "POST", headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" }, body: JSON.stringify({ model: MODEL, state, questions }), signal: AbortSignal.timeout(timeoutMs) });
-    if (res.status === 429 && i < 1) {
-      const ra = res.headers.get("retry-after");
-      await new Promise((r) => setTimeout(r, (ra === null || Number.isNaN(Number(ra)) ? 5 : Math.min(30, Number(ra))) * 1000));
-      continue;
+    if (i > 0) await s(asked ?? RETRY_DELAYS[i - 1]);
+    asked = null;
+    let res;
+    try {
+      res = await f(API, { method: "POST", headers: { authorization: `Bearer ${key()}`, "content-type": "application/json" }, body: JSON.stringify({ model: MODEL, state, questions }), signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      if (i < RETRY_DELAYS.length) continue;
+      throw err;
     }
-    if (!res.ok) throw new Error(`jev http ${res.status}: ${clip(await res.text(), 200)}`);
+    if (!res.ok) {
+      // A body that cannot be read (a 5xx cut off mid-stream) still leaves the call in the retry path.
+      const err = new Error(`jev http ${res.status}: ${clip(await res.text().catch(() => ""), 200)}`);
+      if (retryable(res.status) && i < RETRY_DELAYS.length) { asked = retryAfter(res); continue; }
+      throw err;
+    }
     const body = await res.json();
     if (!body || typeof body.answers !== "object" || body.answers === null) throw new Error("jev: malformed response");
     return body.answers;
@@ -42,9 +75,10 @@ export async function askJev(state, questions, { timeoutMs = 20000, fetchFn = fe
 }
 
 /**
- * The lobby as Jev sees it: legal-looking footer links, then the clickable texts, then legal-looking links elsewhere,
- * then the rest of the footer; one entry per href; at most MAX_ENTRIES, so a footer of game links cannot push the
- * terms out. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. With fewer
+ * The lobby as Jev sees it: legal-looking footer links in footer order, legal-looking links elsewhere, the clickable
+ * texts, then the rest of the footer with any caption (any language or script: a caption the word lists do not know
+ * must still reach Jev), last link first; one entry per href; at most MAX_ENTRIES, so a footer of game links cannot
+ * push the terms out. A link with no text and no legal-looking path (a payment logo, a licence seal) is left out. With fewer
  * than five entries the page's last anchors are added (see below). Option names
  * are sent to the model, so each id starts with the link's own words.
  */
@@ -61,9 +95,11 @@ export function linkEntries(lobby) {
     out.push({ id: `${slug(text) || slug(path(href)) || "link"}_${out.length}`, text, href: href || "", in_footer: !!footer, kind });
   };
   for (const l of links) if (l.footer && legal(l)) add(l.text, l.href, true, "link");
-  for (const c of clickables) add(c.text, "", c.footer, "text");
   for (const l of links) if (!l.footer && legal(l)) add(l.text, l.href, false, "link");
-  for (const l of links) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
+  for (const c of clickables) add(c.text, "", c.footer, "text");
+  // The rest of the footer, whatever the caption (a terms link in a language the word lists do not know), from the end:
+  // the legal row is usually last, below the game links.
+  for (const l of [...links].reverse()) if (l.footer && !legal(l)) add(l.text, l.href, true, "link");
   // No footer was found and nothing reads as legal (koalabet, jasino, betportal): Jev still sees the bottom of the
   // page, the last anchors in DOM order (bottom first), on the casino's domain or a file host.
   if (out.length < 5) {
@@ -116,14 +152,18 @@ export const linkSummary = (answers) => {
   return `link:${fmt(answers.has_terms?.noul)}/${probs && typeof probs === "object" ? fmt(Math.max(0, ...Object.values(probs))) : "?"}`;
 };
 
+// The page as Jev sees it. `core`: the text is what the page adds beyond the lobby's header and footer (coreText), not
+// the page's whole text.
+const pageState = ({ url, title, headings, text, core }) => ({ page: { url: clip(url, 200), title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS), core: !!core } });
+
 /**
  * The page judgment: is this document the general terms of the whole site. The URL (so Jev sees the path), the opening
  * of the page and its headings are enough. A product section's terms (elarabet's sportsbook terms read like general
  * terms) are not.
  */
-export function termsPageQuestion({ url, title, headings, text }) {
+export function termsPageQuestion(meta) {
   return {
-    state: { page: { url: clip(url, 200), title: clip(title, 120), headings: (headings || []).slice(0, 30).map((h) => clip(h, 80)), text: (text || "").slice(0, PAGE_TEXT_CHARS) } },
+    state: pageState(meta),
     questions: {
       is_terms: {
         type: "noul",
@@ -137,5 +177,77 @@ export function termsPageQuestion({ url, title, headings, text }) {
   };
 }
 
+/**
+ * The exclusion judgment, asked about a borderline page (is_terms from PAGE_NOUL_BORDER up to PAGE_NOUL_MIN) with the
+ * same state: is it anything other than the general terms of the whole site.
+ */
+export function exclusionQuestion(meta) {
+  return {
+    state: pageState(meta),
+    questions: {
+      not_general: {
+        type: "noul",
+        instructions: "Is `page` a promotion's or bonus terms, one product section's terms (sportsbook, poker, bingo, racing, live casino), a privacy or cookie policy, game or betting rules, a help article, or anything other than the general terms and conditions of the whole site?",
+        criteria: {
+          true: "a promotion's or bonus terms, the terms of one product section (sportsbook, poker, bingo, racing, live casino) of a site that also offers other products, a privacy or cookie policy, game or sports-betting rules, a help article, a lobby, a registration form, an error page, or any other page",
+          false: "the general terms and conditions, terms of service, terms of use or user agreement that govern a player's account, deposits, bets and withdrawals on the whole site, shown in full or as its opening sections",
+        },
+      },
+    },
+  };
+}
+
 export const acceptsPage = (answers) => !!answers && !!answers.is_terms && answers.is_terms.noul >= PAGE_NOUL_MIN;
-export const pageSummary = (answers) => answers ? `page:${fmt(answers.is_terms?.noul)}` : "off";
+/** A borderline page: Jev leans to the general terms, rules the exclusions out, and the text reads like terms. */
+export const acceptsBorderline = (answers, exclusion, text) => !!answers?.is_terms && answers.is_terms.noul >= PAGE_NOUL_BORDER
+  && !!exclusion?.not_general && exclusion.not_general.noul <= EXCLUSION_MAX && readsLikeTerms(text || "");
+/** The `jev` column's note for a page: `page:<noul>`, and ` excl:<noul>` when the exclusion question was asked. */
+export const pageSummary = (answers, exclusion) => answers ? `page:${fmt(answers.is_terms?.noul)}${exclusion ? ` excl:${fmt(exclusion.not_general?.noul)}` : ""}` : "off";
+
+export const LOBBY_P_MIN = 0.8; // the top lobby option must be this likely ...
+export const LOBBY_CONFIDENCE_MIN = 0.7; // ... and the answer's confidence this high, before a lobby is given a status
+// option -> the status it gives; `gambling_site` gives none. `closed` is terminal (never retried), so it is given only for
+// a permanent closure; a temporary outage, maintenance or a suspension gives `maintenance`, which is retried.
+const LOBBY_STATUS = { geo_or_regulatory_notice: "geo_blocked", closed_or_suspended: "closed", temporarily_unavailable: "maintenance", parked_or_for_sale: "parked", not_gambling_site: "not_casino", error_or_bot_wall: "blocked_http" };
+
+/**
+ * The lobby judgment, asked when the terms search ends without the terms (whether or not the lobby offered a terms
+ * link or clickable): what is this page. `captions` are the footer's link texts and the clickable texts. Affiliate and
+ * review sites, blogs and templates answer here what no pattern could say.
+ */
+export function lobbyQuestion({ url, title, text, captions }) {
+  return {
+    state: { page: { url: clip(url, 200), title: clip(title, 120), text: (text || "").slice(0, 3000), captions: (captions || []).slice(0, MAX_ENTRIES).map((c) => clip(c, 60)) } },
+    questions: {
+      kind: {
+        type: "choice",
+        instructions: "What is `page`? Judge from the page's text and link captions, not from the domain name: a domain that once hosted a casino may now hold unrelated content.",
+        criteria: {
+          gambling_site: "an online casino, sportsbook, poker, bingo or lottery operator's own site, whatever its language",
+          geo_or_regulatory_notice: "a notice that the service is not offered in the visitor's country or region, or is blocked by a regulator",
+          closed_or_suspended: "a notice that the site has permanently closed or ceased operating — not a temporary outage, maintenance or a licence suspension",
+          temporarily_unavailable: "a notice that the site is temporarily unavailable: maintenance, a temporary outage or suspension, 'try again later'",
+          parked_or_for_sale: "a parked domain or a domain for sale",
+          not_gambling_site: "an affiliate, review, comparison or news site, a blog, a template or placeholder page, or a software vendor's page, not an operator's own site",
+          error_or_bot_wall: "an error page, an access-denied page or a bot or human-verification wall",
+        },
+      },
+    },
+  };
+}
+
+/** The status a confident lobby answer gives: "geo_blocked", "closed", "maintenance", "parked", "not_casino", "blocked_http"; null for a gambling site, an unsure answer or none. */
+export function lobbyVerdict(answers) {
+  const a = answers?.kind;
+  if (!a || !((a.confidence ?? a.noul) >= LOBBY_CONFIDENCE_MIN) || !a.probabilities || typeof a.probabilities !== "object") return null;
+  const [top, p] = Object.entries(a.probabilities).sort((x, y) => y[1] - x[1])[0] || [];
+  return p >= LOBBY_P_MIN && Object.hasOwn(LOBBY_STATUS, top) ? LOBBY_STATUS[top] : null;
+}
+
+/** The `jev` column's note for a lobby answer: `lobby:<option>:<p>`. */
+export const lobbySummary = (answers) => {
+  const probs = answers?.kind?.probabilities;
+  if (!answers || !probs || typeof probs !== "object") return "off";
+  const [top, p] = Object.entries(probs).sort((x, y) => y[1] - x[1])[0] || [];
+  return top ? `lobby:${top}:${fmt(p)}` : "off";
+};

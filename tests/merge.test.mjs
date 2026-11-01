@@ -14,9 +14,19 @@ test("better: within a rank the later row wins", () => {
   assert.equal(better(row("a", "ok", "yes", "local"), row("a", "ok", "yes", "retry")).tag, "retry");
   assert.equal(better(row("a", "blocked_http", "", "local"), row("a", "timeout", "", "retry")).tag, "retry");
 });
-test("better: parked against ok without terms keeps the ok", () => {
-  assert.equal(better(row("a", "ok", "no", "local"), row("a", "parked", "", "retry")).tag, "local");
+test("better: parked, closed and not_casino rank with ok without terms: the later row wins between equals", () => {
   assert.equal(better(row("a", "parked", "", "local"), row("a", "ok", "no", "retry")).tag, "retry");
+  assert.equal(better(row("a", "ok", "no", "local"), row("a", "closed", "", "retry")).tag, "retry");
+  assert.equal(better(row("a", "parked", "", "shard0"), row("a", "ok", "no", "shard1")).tag, "shard1");
+  assert.equal(better(row("a", "ok", "no", "local"), row("a", "not_casino", "", "retry")).tag, "retry");
+});
+test("better: a classified row beats a failure; terms beat a classification", () => {
+  assert.equal(better(row("a", "closed", "", "local"), row("a", "blocked_http", "", "retry")).tag, "local");
+  assert.equal(better(row("a", "blocked_http", "", "local"), row("a", "closed", "", "retry")).tag, "retry");
+  assert.equal(better(row("a", "not_casino", "", "local"), row("a", "timeout", "", "retry")).tag, "local");
+  assert.equal(better(row("a", "not_casino", "", "local"), row("a", "ok", "yes", "retry")).tag, "retry");
+  assert.equal(better(row("a", "ok", "yes", "local"), row("a", "not_casino", "", "retry")).tag, "local");
+  assert.equal(better(row("a", "ok", "yes", "local"), row("a", "parked", "", "retry")).tag, "local");
 });
 
 test("mergeRows: within one shard the last row is the verdict; across shards the better row stands", () => {

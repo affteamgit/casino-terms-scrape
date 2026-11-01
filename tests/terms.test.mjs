@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { docx } from "./docx-fixture.mjs";
 import { chromium } from "playwright-core";
-import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText } from "../src/terms.mjs";
+import { dismissCookies, isParked, englishVariant, isParkedUrl, notCasino, sameAsLobby, fingerprint, guessUrls, GUESS_PATHS, readLobby, readDoc, readsLikeTerms, CLICK_TEXT, CLICK_SKIP, expandSections, marketplaceLobby, isMarketplaceUrl, lobbyStatus, addedText, sitemapChildren, sitemapTerms, fetchTerms, fastInPlace, guessOrder, isShellOf, namesProduct, coreText, BLOCK_TEXT, BLOCK_TEXT_HEAD, CLOSED_TEXT, WAF_TEXT, MARKETPLACE_HOSTS, frameText, otherDocsFor, helpLinks, findSignupInPage, modalPartsInPage } from "../src/terms.mjs";
 
 test("isParked: for-sale and parking pages, not a casino that merely mentions a domain", () => {
   assert.equal(isParked("Skip to main content Excellent 4.5 out of 5 The domain name ScatterHall.com is for sale! Get this domain Own it today for $2,995, or make an offer."), true);
@@ -274,6 +275,71 @@ test("lobbyStatus: a bot check is walled whatever the HTTP code (lumocasino 405 
   assert.equal(st("Welcome to Example Casino. " + "Play slots. ".repeat(50)), "ok");
 });
 
+test("lobbyStatus: geo notices in several languages, closed sites, WAF refusals and marketplace error pages (the 719 reached-without-terms rows)", () => {
+  const st = (text, httpStatus = 200, finalUrl = "https://casino.example/") => lobbyStatus({ text, httpStatus, finalUrl });
+  const pad = " " + "Play slots, live dealer games and sports with fast payouts. ".repeat(4);
+  // an English notice that the services are not offered where the visitor lives (888)
+  assert.equal(st("Important notice: Please note that 888's services are not being offered to players residing in your location." + pad), "geo_blocked");
+  // "unavailable in your location" headline (Mr Green)
+  assert.equal(st("MR GREEN UNAVAILABLE IN YOUR LOCATION Thank you for choosing Mr Green, but we are unable to offer our services." + pad), "geo_blocked");
+  // a withdrawal notice worded as "no longer available" but naming the visitor's country: the geo form wins over closed
+  assert.equal(st("Dear visitor! Due to a management decision, the services of this website are unfortunately no longer available for customers residing in your country." + pad), "geo_blocked");
+  // a Brazilian government block page: "acesso bloqueado ... medida provisória"
+  assert.equal(st("Governo Federal Acesso bloqueado A plataforma de apostas que você tentou acessar está fora do ar por determinação da Medida Provisória nº 1.394/2026" + pad), "geo_blocked");
+  // a Russian "location restriction" notice: "не можем принять игроков"
+  assert.equal(st("Ограничение местоположения По юридическим причинам мы не можем принять игроков, проживающих в стране, в которой вы в данный момент находитесь." + pad), "geo_blocked");
+  assert.equal(st("Dieses Angebot ist leider in Ihrem Land nicht verfügbar." + pad), "geo_blocked", "German");
+  assert.equal(st("Ce site n'est pas disponible dans votre pays." + pad), "geo_blocked", "French");
+  assert.equal(st("Este sitio no está disponible en tu país." + pad), "geo_blocked", "Spanish");
+  assert.equal(st("Questo sito non è disponibile nel tuo paese." + pad), "geo_blocked", "Italian");
+  assert.equal(st("Bu site ülkenizde kullanılamıyor." + pad), "geo_blocked", "Turkish");
+  // a site that says it has shut down (europacasino)
+  assert.equal(st("EUROPACASINO.COM NO LONGER AVAILABLE Sorry! Europacasino.com is now closed for business. For further information please contact support." + pad), "closed");
+  assert.equal(st("Our casino has ceased operations. Thank you for playing with us." + pad), "closed", "ceased operations");
+  // a closed notice on a full lobby with its own terms link is a casino announcing something: not closed
+  const lobbyLinks = [{ href: "https://casino.example/terms-and-conditions", text: "Terms and Conditions", footer: true }];
+  assert.equal(lobbyStatus({ text: "Our sportsbook is closed for business on Sundays. " + pad, finalUrl: "https://casino.example/", links: lobbyLinks }), "ok");
+  // likewise a geo notice on a lobby that links its own terms (Entain's help.<brand>.com/closed pages): the terms are read
+  assert.equal(lobbyStatus({ text: "Sorry, this site is not available in your country. " + pad, finalUrl: "https://help.casino.example/closed", links: lobbyLinks }), "ok", "geo notice with its own terms link");
+  assert.equal(lobbyStatus({ text: "Sorry, this site is not available in your country. " + pad, finalUrl: "https://casino.example/", links: [{ href: "https://other.example/terms-and-conditions", text: "Terms and Conditions", footer: true }] }), "geo_blocked", "another domain's terms link does not count");
+  assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(200) + "The old lobby has been closed for business."), "ok", "a long lobby that mentions it");
+  // false terminal statuses: a registration step, a bonus line or an account notice is not a closed site
+  assert.equal(st("Registrierung abgeschlossen. Vielen Dank, Ihr Konto wurde angelegt." + pad), "ok", "abgeschlossen is not geschlossen");
+  assert.equal(st("Welcome to Example Casino. This bonus is no longer available. Pick another offer below." + pad), "ok", "a promo line");
+  assert.equal(st("Welcome back. Your account has been closed at your request. Open a new one below." + pad), "ok", "an account notice");
+  assert.equal(st("Welcome to Example Casino. This casino bonus is no longer available. Pick another offer below." + pad), "ok", "a bonus with casino in front of it");
+  assert.equal(st("We are sorry, this offer is no longer available. Pick another offer below." + pad), "ok", "an offer with we in front of it");
+  assert.equal(st("This site is no longer available. Thank you for playing." + pad), "closed", "the site as an explicit subject");
+  // availability qualified by a browser, a device or a market is not a closure: those statuses are never retried
+  assert.equal(st("Our website is no longer available in your browser version. Please update." + pad), "ok", "a browser-version notice");
+  // a market exit is a geo notice, not a closed site
+  assert.equal(st("Our casino is no longer accepting players from Norway. Thank you for your understanding." + pad), "geo_blocked", "a market exit");
+  assert.equal(st("Please note that this website is no longer accepting new registrations from the United Kingdom." + pad), "geo_blocked", "a market exit, registrations");
+  // the real closures stay closed
+  assert.equal(st("Europacasino.com is now closed for business. Thank you for playing with us over the years." + pad), "closed", "is now closed for business");
+  assert.equal(st("This website has been closed. Thank you for playing with us over the years." + pad), "closed", "has been closed");
+  assert.equal(st("Please be advised that Example Casino has officially ceased operations as of 1 March. Players can withdraw their balance until 31 March." + pad), "closed", "the Aspire Global shape");
+  assert.equal(st("Unser Casino ist dauerhaft geschlossen. Danke fürs Mitspielen." + pad), "closed", "German, the site as subject");
+  // the broad geo wording counts at the head of the page only, not in a lobby's footer disclaimer
+  const lobby = (footer) => "Welcome to Example Casino. " + "Play slots, live dealer games and sports with fast payouts. ".repeat(40) + footer;
+  assert.ok(lobby("").length > 1500 && lobby("").length < 5000);
+  assert.equal(st(lobby("Some promotions are not offered in your country.")), "ok", "footer disclaimer");
+  assert.equal(st(lobby("Open to players residing in your country if licensed.")), "ok", "footer disclaimer, residing");
+  // an Akamai-style refusal in Slovak: "URL ... zamietnutá", with a support ID
+  assert.equal(st("Požadovaná URL adresa bola zamietnutá. Kontaktujte prosím IT podporu. Vaše ID pre podporu je: <678628845435775204>"), "blocked_http");
+  assert.equal(st("The request was blocked. Incident ID: 1234-5678" + pad), "blocked_http", "Incapsula-style");
+  // an Akamai refusal on the casino's own host is a WAF block, not a geo notice
+  assert.equal(st("Access Denied You don't have permission to access \"http://casino.example/\" on this server. Reference #18.abc", 403), "blocked_http");
+  assert.equal(st("Access is denied. Reference #18.abc", 200), "blocked_http");
+  // a marketplace's own error page is still a parked domain
+  assert.equal(st("Access Denied You don't have permission to access \"http://forsale.godaddy.com/forsale/x.com?\" on this server. Reference #18.b48e655f", 403, "https://forsale.godaddy.com/forsale/x.com"), "parked");
+  assert.equal(st("Access Denied", 200, "https://www.hugedomains.com/domain_profile.cfm?d=x"), "parked");
+  // an ordinary lobby with the terms in its footer is untouched
+  assert.equal(st("Welcome to Example Casino. " + "Play slots, live dealer games and sports. ".repeat(20) + "Terms and Conditions | Privacy Policy | Responsible Gaming"), "ok");
+  assert.ok(CLOSED_TEXT.test("closed for business") && WAF_TEXT.test("Reference #18") && MARKETPLACE_HOSTS.test("forsale.godaddy.com") && !MARKETPLACE_HOSTS.test("evildan.com"));
+  assert.ok(BLOCK_TEXT_HEAD.test("residing in your jurisdiction") && !BLOCK_TEXT.test("residing in your jurisdiction"));
+});
+
 test("notCasino: a review site that says how it rates casinos (masterplay.io)", () => {
   assert.match(notCasino("Everything you need to know about how we review and rank casinos and slots.", [], "https://masterplay.io/en"), /how we review and rank casinos/);
   assert.match(notCasino("What makes Masterplay different from other slot review sites?", [], "https://masterplay.io/en"), /slot review sites/);
@@ -371,8 +437,8 @@ test("a guessed path that serves the lobby shell is not the terms, even when its
     const page = await browser.newPage();
     await page.route("https://casino.test/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: SHELL }));
     await page.goto("https://casino.test/");
-    const lobby = await readLobby(page, { quietMs: 2000 });
-    const r = await fetchTerms(page, lobby);
+    const read = await readLobby(page, { quietMs: 2000 });
+    const r = await fetchTerms(page, read);
     assert.equal(r.text, "", `accepted ${r.href}`);
     assert.ok(r.tried.some((t) => /sitemap\/guessed paths/.test(t)));
   } finally { await browser.close(); if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
@@ -433,6 +499,9 @@ test("guessOrder: the sitemap's terms URLs, then the sibling guesses, then the c
   assert.ok(sitemap.length && siblings.length && common.length);
   assert.ok(Math.max(...sitemap) < Math.min(...siblings), "every sitemap URL before every sibling");
   assert.ok(Math.max(...siblings) < Math.min(...common), "every sibling before every common path");
+  // The general terms next to a rejected promotion's page come after the sitemap's and before the lobby's siblings.
+  const p = guessOrder({ sitemapLocs: [`${o}/rules/terms-and-conditions`], links: [{ text: "Cookie Policy", href: `${o}/dl/cookiepolicy` }], pageUrl: `${o}/`, origin: o, lang: "", promoGuesses: [`${o}/en/terms/`] });
+  assert.equal(p.indexOf(`${o}/en/terms/`), 1, p.slice(0, 3).join(" "));
 });
 
 // Jev, faked: `ask` stands in for askJev. A key is set so the code treats Jev as available; the fake never uses it.
@@ -447,8 +516,10 @@ const withoutJev = async (fn) => {
   try { return await fn(); } finally { if (key !== undefined) process.env.TYPESAFE_API_KEY = key; }
 };
 // `pick`: the path of the link Jev chooses (none: it sees no terms link); `accept(page)`: its page judgment. `log` records each question asked.
+// The lobby question, asked when a search ends without the terms, is answered "a gambling site" (no status).
 const fakeAsk = ({ pick = null, accept = () => false, log = [] } = {}) => async (state, questions) => {
-  log.push(questions.has_terms ? "link" : "page");
+  log.push(questions.has_terms ? "link" : questions.kind ? "kind" : "page");
+  if (questions.kind) return { kind: { type: "choice", choice: "gambling_site", confidence: 0.9, probabilities: { gambling_site: 0.95 } } };
   if (questions.has_terms) {
     const e = pick && state.links.find((l) => l.href.endsWith(pick));
     return { has_terms: { noul: e ? 0.95 : 0.1 }, terms_link: { probabilities: e ? { [e.id]: 0.95 } : {} } };
@@ -504,22 +575,150 @@ test("an in-place document with no terms heading is accepted on Jev's judgment",
 // A promotion's terms page that reads like terms: long, and full of "terms".
 const PROMO_TERMS_PAGE = `<!doctype html><html><head><title>Bonus Terms</title></head><body><h1>Bonus Terms</h1>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${SECTION(i)}</p>`).join("")}</body></html>`;
 
-test("a promotion's terms link is not fast-accepted when Jev can judge it; without Jev, or when Jev fails, the pattern decides as before", async () => {
+test("a link scored 0 or less is Jev's alone: not opened without Jev or with Jev down, never accepted on the pattern, found on Jev's yes as a low-score link", async () => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
     const page = await browser.newPage();
     await site(page, { "/": LOBBY("", `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE });
-    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const read = [];
+    page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+    const search = async (jev) => { await page.goto("https://casino.test/"); read.length = 0; return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const notOpened = (r, why) => {
+      assert.equal(r.text, "", `${why}: accepted ${r.href} via ${r.via}`);
+      assert.ok(!read.includes("/bonus-terms"), `${why}: the link was opened`);
+      assert.ok(!r.tried.some((t) => t.includes("/bonus-terms")), `${why}: ${r.tried.join(" | ")}`);
+    };
     const off = await withoutJev(() => search({ notes: [] }));
-    assert.equal(off.via, "promo-terms", off.tried.join(" | "));
+    notOpened(off, "no key");
+    assert.ok(off.tried.includes("low-score links skipped (Jev off)"), off.tried.join(" | "));
+    // Jev down: the footer question failed, so no page question can be asked.
+    const down = await withJevKey(() => search({ notes: [], ask: async () => { throw new Error("boom"); } }));
+    notOpened(down, "Jev down");
+    assert.ok(down.tried.includes("low-score links skipped (Jev down)"), down.tried.join(" | "));
+    assert.notEqual(down.via, "promo-terms");
     const log = [];
     const no = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
     assert.equal(no.text, "", `accepted ${no.href}`);
     assert.ok(log.includes("page"), "Jev judged the page");
+    // Jev fails on the page question itself: the pattern does not take over.
     const failing = async (state, questions) => { if (questions.is_terms) throw new Error("boom"); return fakeAsk()(state, questions); };
-    const down = await withJevKey(() => search({ notes: [], ask: failing }));
-    assert.equal(down.via, "promo-terms", down.tried.join(" | "));
+    const fails = await withJevKey(() => search({ notes: [], ask: failing }));
+    assert.equal(fails.text, "", `accepted ${fails.href} via ${fails.via}`);
+    const yes = await withJevKey(() => search({ notes: [], ask: fakeAsk({ accept: () => true }) }));
+    assert.equal(yes.href, "https://casino.test/bonus-terms", yes.tried.join(" | "));
+    assert.equal(yes.via, "low-score link");
   } finally { await browser.close(); }
+});
+
+// Jev, scripted: `pick` as in fakeAsk; `page` and `excl` are the is_terms and not_general answers; `seen` records each
+// page question (`q`: its question, `page`: the state it was sent).
+const scriptAsk = ({ pick = null, page = 0.05, excl = 1, seen = [] } = {}) => async (state, questions) => {
+  if (questions.has_terms || questions.kind) return fakeAsk({ pick })(state, questions);
+  seen.push({ q: Object.keys(questions).join(","), page: state.page });
+  return questions.not_general ? { not_general: { type: "noul", noul: excl } } : { is_terms: { type: "noul", noul: page } };
+};
+
+test("a borderline page (Jev 0.65) is the terms when Jev also rules out the exclusions, and not when it does not", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`), "/info/page-7": TERMS_PAGE() });
+      const search = async (ask) => { await page.goto("https://casino.test/"); const jev = { notes: [], ask }; return { ...(await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev)), notes: jev.notes }; };
+      const seen = [];
+      const yes = await search(scriptAsk({ pick: "/info/page-7", page: 0.65, excl: 0.1, seen }));
+      assert.equal(yes.href, "https://casino.test/info/page-7", yes.tried.join(" | "));
+      assert.equal(yes.via, "jev");
+      assert.deepEqual(seen.map((x) => x.q), ["is_terms", "not_general"], "one judgment: both questions, once");
+      assert.equal(seen[1].page.text, seen[0].page.text, "the exclusion question is about the same page");
+      assert.ok(yes.notes.includes("page:0.65 excl:0.10"), yes.notes.join(" "));
+      const no = await search(scriptAsk({ pick: "/info/page-7", page: 0.65, excl: 0.5 }));
+      assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+      assert.ok(no.notes.includes("page:0.65 excl:0.50"), no.notes.join(" "));
+      // Below the band no exclusion question is asked.
+      const low = [];
+      const below = await search(scriptAsk({ pick: "/info/page-7", page: 0.45, excl: 0, seen: low }));
+      assert.equal(below.text, "", `accepted ${below.href} via ${below.via}`);
+      assert.ok(low.every((x) => x.q === "is_terms"), low.map((x) => x.q).join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("a borderline page whose exclusion question fails is not taken on the pattern", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`), "/info/page-7": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const answer = scriptAsk({ pick: "/info/page-7", page: 0.65 });
+      const jev = { notes: [], ask: async (state, questions) => { if (questions.not_general) throw new Error("boom"); return answer(state, questions); } };
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+      assert.ok(jev.notes.includes("page:0.65"), jev.notes.join(" "));
+      assert.ok(jev.notes.some((n) => n.startsWith("error:")), jev.notes.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("a low-score page is not hopped from: its document link is not taken on the pattern when Jev fails on the page", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const pdf = termsPdf(), read = [];
+      await site(page, { "/": LOBBY("", `<a href="/bonus-terms">Bonus Terms</a>`), "/bonus-terms": PROMO_TERMS_PAGE.replace("</body>", `<p><a href="/docs/terms.pdf">Download terms</a></p></body>`) });
+      await page.route("https://casino.test/docs/terms.pdf", (r) => { read.push("pdf"); return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf }); });
+      await page.goto("https://casino.test/");
+      const failing = async (state, questions) => { if (questions.is_terms) throw new Error("boom"); return fakeAsk()(state, questions); };
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: failing });
+      assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+      assert.ok(r.tried.some((t) => t.startsWith("https://casino.test/bonus-terms (")), r.tried.join(" | "));
+      assert.deepEqual(read, [], "the document link was not read");
+    } finally { await browser.close(); }
+  });
+});
+
+test("Jev reads a page's own text, not the lobby's header above it", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/info/page-7">Legal</a>`).replace("<body>", `<body>${HEADER}`), "/info/page-7": TERMS_PAGE().replace("<body>", `<body>${HEADER}`) });
+      await page.goto("https://casino.test/");
+      const seen = [];
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: scriptAsk({ pick: "/info/page-7", page: 0.95, seen }) });
+      assert.equal(r.href, "https://casino.test/info/page-7", r.tried.join(" | "));
+      assert.match(r.text, /^\s*Game category 0/, "the page itself opens with the lobby's header");
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].page.core, true);
+      assert.ok(!/Game category/.test(seen[0].page.text.slice(0, 200)), `Jev saw the header: ${seen[0].page.text.slice(0, 120)}`);
+      assert.match(seen[0].page.text, /^Terms and Conditions 1\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a rejected bonus-terms page leads to the general terms next to it, guessed before the common paths (/en/terms/bonus/ -> /en/terms/)", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/en/terms/bonus/">Bonus Terms</a>`), "/en/terms/bonus/": PROMO_TERMS_PAGE, "/en/terms/": TERMS_PAGE() });
+      const read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      const search = async (pick) => { await page.goto("https://casino.test/"); read.length = 0; return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick, accept: (p) => !/bonus/i.test(p.url) }) }); };
+      // Jev picks the bonus terms; the page read rejects them.
+      const picked = await search("/en/terms/bonus/");
+      assert.equal(picked.href, "https://casino.test/en/terms/", picked.tried.join(" | "));
+      assert.equal(picked.via, "guess");
+      assert.ok(picked.tried.some((t) => t.startsWith("https://casino.test/en/terms/bonus/ (")), picked.tried.join(" | "));
+      assert.ok(!read.includes("/terms-and-conditions"), `a common path was guessed first: ${read.join(" ")}`);
+      // The bonus terms are only a low-scored link: the general terms next to them are still guessed after Jev rejects them.
+      const low = await search(null);
+      assert.equal(low.href, "https://casino.test/en/terms/", low.tried.join(" | "));
+      assert.equal(low.via, "guess");
+    } finally { await browser.close(); }
+  });
 });
 
 test("a Jev pick the heuristic does not score is accepted on Jev's page judgment, not on the pattern", async () => {
@@ -763,6 +962,843 @@ test("a stub that shows the lobby with a link to the terms document is hopped fr
       assert.ok(r.tried.includes("https://casino.test/info/tos-page (lobby shell)"), r.tried.join(" | "));
       assert.equal(r.pdf, true, r.tried.join(" | "));
       assert.equal(r.href, "https://casino.test/docs/terms.pdf");
+    } finally { await browser.close(); }
+  });
+});
+
+// A lobby whose header and footer read like terms on their own (the footer's SEO block and its "Terms and Conditions"
+// link hold 8 terms words), and pages under the same header and footer: the shell alone passes readsLikeTerms.
+// `menu`: the lobby's header (HEADER), or the same links in a plain <div class="menu"> (DIV_MENU), which the hidden text
+// keeps: hiddenTextInPage strips only header, nav and footer.
+const CHROME = (main, end = "", menu = HEADER) => `<!doctype html><html><body>${menu}<main>${main}</main><footer><a href="/terms.html">Terms and Conditions</a>${ELARA_SEO}</footer>${end}</body></html>`;
+const CHROME_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`);
+const DIV_MENU = HEADER.replace("<header><nav>", '<div class="menu">').replace("</nav></header>", "</div>");
+const DIV_LOBBY = CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`, "", DIV_MENU);
+const GENERALS = (n) => Array.from({ length: n }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("");
+const INTRO = `<h1>Terms and Conditions</h1><p>${"Please read these terms carefully before you play. ".repeat(6)}</p>`;
+// `terms`: the HTML /terms.html serves; `lobby`: the HTML / serves. The search runs without Jev; `ms` is how long it took.
+const searchChrome = (terms, lobby = CHROME_LOBBY) => withoutJev(async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await site(page, { "/": lobby, "/terms.html": terms });
+    await page.goto("https://casino.test/");
+    const lobbyText = await page.evaluate(() => document.body.innerText);
+    assert.ok(readsLikeTerms(lobbyText), "the lobby's own chrome reads like terms");
+    const read = await readLobby(page, { quietMs: 2000 });
+    const t0 = Date.now();
+    const r = await fetchTerms(page, read);
+    return { ...r, ms: Date.now() - t0 };
+  } finally { await browser.close(); }
+});
+
+test("a terms page that shows the lobby's header and footer first and its document 4 s later is read once the document arrives", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", late));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /1\. These terms and conditions govern/);
+  assert.ok(r.text.length >= 4000);
+});
+
+test("a terms page under the lobby's chrome whose 60,000 characters sit in closed <details> is read", async () => {
+  const parts = Array.from({ length: 10 }, (_, k) => `<details><summary>Part ${k + 1}</summary>${GENERALS(14)}</details>`).join("");
+  const r = await searchChrome(CHROME(INTRO + parts));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.ok(r.text.length >= 60000, `${r.text.length} chars`);
+});
+
+test("a shell whose hidden document is shorter than three times the visible chrome yields the hidden text, judged as the terms", async () => {
+  const r = await searchChrome(CHROME(INTRO + `<div hidden>${GENERALS(11)}</div>`));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.equal(r.hidden, true);
+  assert.match(r.text, /11\. These terms and conditions govern/);
+});
+
+test("a 404 page that is the lobby's chrome around a 'not found' line is still the lobby shell", async () => {
+  const r = await searchChrome(CHROME(`<h1>Page not found</h1><p>${"Sorry, this page could not be found. ".repeat(5)}</p>`));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+// A lobby whose <main> opens with a ticker that differs on every load and goes on with an SEO block that reads like
+// terms: its hidden text (from <main>, without header and footer) never opens the same way twice.
+const TICKER_PAGE = CHROME(`<p id="tk"></p>${ELARA_SEO}`, `<script>document.getElementById("tk").textContent = Math.floor(Math.random() * 1e9) + " players online now";</script>`);
+
+test("a shell whose hidden text is the lobby's own behind a ticker that differs on each load is not the terms", async () => {
+  const r = await searchChrome(TICKER_PAGE, TICKER_PAGE);
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+// A lobby that hides a long SEO block reading like terms (over 3 times its visible text), served on every page.
+const HIDDEN_SEO = `<div hidden>${Array.from({ length: 40 }, (_, i) => `<p>${SECTION(i)}</p>`).join("")}</div>`;
+
+test("a terms page that arrives 4 s after a shell offering the lobby's long hidden text is read once it arrives", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", HIDDEN_SEO + late), CHROME(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`, HIDDEN_SEO));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.ok(!r.hidden, "the visible document, not the lobby's hidden text");
+});
+
+test("an accordion under the lobby's chrome whose sections open on an aria-expanded button is read once they are open", async () => {
+  const parts = Array.from({ length: 10 }, (_, k) => `<button aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true'); this.nextElementSibling.hidden = false">Part ${k + 1}</button><div hidden><p>${k + 1}. ${GENERAL(k)}</p></div>`).join("");
+  const r = await searchChrome(CHROME(INTRO + parts));
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /10\. These terms and conditions govern/);
+  assert.ok(!r.hidden, "read from the opened sections, not the hidden text");
+});
+
+test("under a <div> menu that the hidden text keeps, a hidden terms document is still the terms (not the lobby's hidden shell)", async () => {
+  assert.ok(DIV_MENU.replace(/<[^>]+>/g, "").length >= 600, "a menu of 600 characters or more");
+  const r = await searchChrome(CHROME(INTRO + `<div hidden>${GENERALS(11)}</div>`, "", DIV_MENU), DIV_LOBBY);
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.equal(r.hidden, true);
+  assert.match(r.text, /11\. These terms and conditions govern/);
+});
+
+test("under a <div> menu that the hidden text keeps, a document that arrives 4 s after the shell is read when it arrives, not at the budget", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 4000)</script>`;
+  const r = await searchChrome(CHROME("", late, DIV_MENU), DIV_LOBBY);
+  assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.ok(r.ms < 20000, `took ${r.ms} ms`);
+});
+
+// A lobby with no terms link, no clickable and no candidates: Jev is asked what the page is.
+const NO_LINKS_LOBBY = LOBBY(`<a href="/about">About us</a><a href="/blog">Blog</a>`);
+const lobbyAsk = ({ option = "not_gambling_site", p = 0.9, confidence = 0.9, log = [], seen = [] } = {}) => async (state, questions) => {
+  if (!questions.kind) return fakeAsk()(state, questions);
+  log.push("kind"); seen.push(state);
+  return { kind: { type: "choice", choice: option, confidence, probabilities: { [option]: p, gambling_site: 1 - p } } };
+};
+
+test("a lobby with no terms link is classified by Jev's lobby judgment: not a gambling site becomes lobbyClass not_casino, a gambling site stays unclassified", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": NO_LINKS_LOBBY.replace("<body>", "<head><title>Top Casinos Reviewed</title></head><body>") });
+      const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+      const seen = [];
+      const jev = { notes: [], ask: lobbyAsk({ seen }) };
+      const r = await search(jev);
+      assert.equal(r.lobbyClass, "not_casino");
+      assert.ok(!r.text, "no terms found");
+      assert.ok(jev.notes.includes("lobby:not_gambling_site:0.90"), jev.notes.join(" "));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].page.url, "https://casino.test/");
+      assert.match(seen[0].page.text, /Play slots and live games/);
+      assert.ok(seen[0].page.captions.includes("About us"), seen[0].page.captions.join(","));
+      const casino = await search({ notes: [], ask: lobbyAsk({ option: "gambling_site", p: 0.95 }) });
+      assert.equal(casino.lobbyClass ?? null, null);
+      const unsure = await search({ notes: [], ask: lobbyAsk({ confidence: 0.4 }) });
+      assert.equal(unsure.lobbyClass ?? null, null, "an unsure answer leaves the regex result");
+    } finally { await browser.close(); }
+  });
+});
+
+test("the lobby judgment fails open: no key, a failed call, and a lobby that has a terms link never classify", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    await site(page, { "/": NO_LINKS_LOBBY });
+    const log = [];
+    const off = await withoutJev(() => search({ notes: [], ask: lobbyAsk({ log }) }));
+    assert.equal(off.lobbyClass ?? null, null);
+    assert.deepEqual(log, [], "no key, no question");
+    const jev = { notes: [], ask: async () => { throw new Error("boom"); } };
+    const down = await withJevKey(() => search(jev));
+    assert.equal(down.lobbyClass ?? null, null);
+    assert.ok(jev.notes.some((n) => n.startsWith("error:")), jev.notes.join(" "));
+    await page.unroute("https://casino.test/**");
+    await site(page, { "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a>`), "/terms-and-conditions": TERMS_PAGE() });
+    const withLink = await withJevKey(() => search({ notes: [], ask: lobbyAsk({ log }) }));
+    assert.equal(withLink.lobbyClass ?? null, null);
+    assert.ok(withLink.text, "the terms were found");
+    assert.deepEqual(log, [], "the lobby question is not asked when the lobby has a terms link");
+  } finally { await browser.close(); }
+});
+
+test("readsLikeTerms: a 2,000-character text counts the terms words of other languages, and ordinary lobby text does not", () => {
+  const sr = "Opšti uslovi korišćenja. " + "Igrač prihvata ove uslovi korišćenja. ".repeat(60);
+  assert.ok(sr.length >= 2000 && readsLikeTerms(sr));
+  assert.ok(!readsLikeTerms("Opšti uslovi i pravila. ".repeat(50)), "under 2,000 characters");
+  assert.ok(readsLikeTerms(("お客様は利用規約に同意するものとします。" + "x".repeat(20)).repeat(80)));
+  assert.ok(readsLikeTerms(("Kullanım Şartları ve Koşullar gereği kurallar uygulanır. " + "x".repeat(10)).repeat(40)));
+  assert.ok(!readsLikeTerms("Oyun kuralları: slot oyunları, canlı casino ve spor bahisleri. ".repeat(60)), "Turkish game rules are not terms");
+  // rules and policy words alone do not make a page terms: a privacy policy, a game's rules
+  assert.ok(!readsLikeTerms("Adatvédelmi szabályzat. Az adatkezelő személyes adatokat kezel a játékosról. ".repeat(30)), "Hungarian privacy policy");
+  assert.ok(!readsLikeTerms("Pravila igre. Igrač dobija žetone na početku svake runde ruleta. ".repeat(32)), "Serbian game rules");
+  assert.ok(!readsLikeTerms("游戏规则：玩家在每轮开始时下注，赢得的奖金将计入余额。".repeat(80)), "Chinese game rules");
+  assert.ok(!readsLikeTerms("Play slots, live casino and jackpots with the best pravilan games. Termination is easy. ".repeat(40)));
+});
+
+test("CLICK_TEXT matches terms captions across languages and not game rules", () => {
+  const re = new RegExp(CLICK_TEXT, "i");
+  for (const t of ["Şartlar ve Koşullar", "Uslovi korišćenja", "Termeni și condiții", "利用規約", "Voorwaarden", "Términos y condiciones", "Vilkår", "Regler", "Умови використання", "User Agreement", "T & Cs", "Allgemeine Geschäftsbedingungen"]) assert.ok(re.test(t), t);
+  for (const t of ["Oyun Kuralları", "Blackjack", "Slots", "Sport & Casino"]) assert.ok(!re.test(t), t);
+  // rules-worded captions are clickable candidates, but a privacy policy or a game's rules is skipped
+  for (const t of ["Pravila", "Szabályzat", "Kurallar", "条款"]) assert.ok(re.test(t), t);
+  const skip = new RegExp(CLICK_SKIP, "i");
+  for (const t of ["Adatvédelmi szabályzat", "Adatkezelési szabályzat", "Politika privatnosti", "Gizlilik Politikası", "Oyun Kuralları", "游戏规则", "隐私政策", "Spielregeln", "Pravila igre", "Pravila igara"]) assert.ok(skip.test(t), t);
+  for (const t of ["Opšti uslovi", "Opći uvjeti igre", "Pravila igre na sreću", "Şartlar ve Koşullar", "Allgemeine Geschäftsbedingungen", "利用規約"]) assert.ok(!skip.test(t), t);
+});
+
+test("readLobby: an image-only link takes its caption from aria-label, then title, then the image's alt", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<!doctype html><html><body><footer><p>${"Footer text. ".repeat(10)}</p>
+      <a href="https://c.com/a" aria-label="Aria caption"><img src="data:," alt="Alt a"></a>
+      <a href="https://c.com/b" title="Title caption"><img src="data:," alt="Alt b"></a>
+      <a href="https://c.com/c"><img src="data:," alt="Uslovi korišćenja"></a>
+      <a href="https://c.com/d"><img src="data:,"></a></footer></body></html>`);
+    const lobby = await readLobby(page, { quietMs: 1500, maxMs: 4000 });
+    const text = (h) => lobby.links.find((l) => l.href === h).text;
+    assert.equal(text("https://c.com/a"), "Aria caption");
+    assert.equal(text("https://c.com/b"), "Title caption");
+    assert.equal(text("https://c.com/c"), "Uslovi korišćenja");
+    assert.equal(text("https://c.com/d"), "");
+  } finally { await browser.close(); }
+});
+
+// A sentence only the framed document holds: the page around the frame never says it.
+const FRAMED = `<!doctype html><html><head><title>Terms and Conditions</title></head><body><h1>Terms and Conditions</h1><p>Only the framed document says this sentence about the governing law of Malta.</p>${Array.from({ length: 12 }, (_, i) => `<p>${i + 1}. ${GENERAL(i)}</p>`).join("")}</body></html>`;
+
+test("a terms click that opens a new tab reads the tab and closes it (wildcasino.ag)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      // routed on the context: the tab the click opens is another page
+      await site(page.context(), {
+        "/": LOBBY(`<a href="#" onclick="window.open('/terms-popup.html')">Terms &amp; Conditions</a>`),
+        "/terms-popup.html": TERMS_PAGE(),
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+      assert.equal(r.via, "click");
+      assert.match(r.text, /These terms and conditions govern/);
+      assert.equal(page.context().pages().length, 1, "the tab is closed");
+    } finally { await browser.close(); }
+  });
+});
+
+test("a terms click that shows a modal with an iframe reads the frame's document (slotmagie.de, rocket.run)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page.context(), {
+        "/": LOBBY(`<button onclick="document.getElementById('m').style.display = 'block'">Terms &amp; Conditions</button>`,
+          `<div id="m" style="display:none"><iframe src="/terms-frame.html" width="800" height="600"></iframe></div>`),
+        "/terms-frame.html": FRAMED,
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.via, "click", r.tried.join(" | "));
+      assert.equal(r.frame, true);
+      assert.equal(r.href, "https://casino.test/terms-frame.html");
+      assert.match(r.text, /governing law of Malta/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a terms page whose body is an iframe is read from the frame", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page.context(), {
+        "/": LOBBY(`<a href="/terms.html">Terms and Conditions</a>`),
+        "/terms.html": `<!doctype html><html><head><title>Terms</title></head><body><h1>Terms</h1><p>${"Read our rules below. ".repeat(8)}</p><iframe src="/terms-doc.html" width="800" height="600"></iframe></body></html>`,
+        "/terms-doc.html": FRAMED,
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.frame, true);
+      assert.match(r.text, /governing law of Malta/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("frameText: the longest frame that passes, never a PDF's frame", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const pages = { "/terms.pdf": FRAMED, "/short.html": "<html><body><p>Short.</p></body></html>", "/doc.html": FRAMED, "/longer.html": FRAMED.replace("</body>", `<p>${GENERAL(13)}</p></body>`) };
+    await site(page, { ...pages, "/": `<html><body><iframe src="/terms.pdf"></iframe><iframe src="/short.html"></iframe></body></html>` });
+    await page.goto("https://casino.test/");
+    await page.waitForLoadState("load");
+    assert.equal(await frameText(page, readsLikeTerms), null, "a .pdf frame is not read, a short frame does not count");
+    await site(page, { ...pages, "/": `<html><body><iframe src="/doc.html"></iframe><iframe src="/longer.html"></iframe></body></html>` });
+    await page.goto("https://casino.test/");
+    await page.waitForLoadState("load");
+    const f = await frameText(page, readsLikeTerms);
+    assert.equal(f.url, "https://casino.test/longer.html");
+    assert.equal(await frameText(page, () => false), null, "want decides");
+  } finally { await browser.close(); }
+});
+
+test("a terms click that opens a PDF in a new tab reads the PDF and closes the tab", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), pdf = termsPdf();
+      await page.context().route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/terms.pdf") return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf });
+        return p === "/" ? r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="#" onclick="window.open('/terms.pdf')">Terms &amp; Conditions</a>`) }) : r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.via, "click");
+      assert.equal(r.href, "https://casino.test/terms.pdf");
+      assert.match(r.text, /General Terms and Conditions/);
+      assert.equal(page.context().pages().length, 1, "the tab is closed");
+    } finally { await browser.close(); }
+  });
+});
+
+// A lobby whose chrome reads like terms (HEADER's menu, ELARA_SEO in the footer) and whose terms are reached only by a
+// click: `clickable` is the footer's terms control.
+const CLICK_CHROME = (clickable, main = `<p>${"Play slots and live games every day. ".repeat(30)}</p>`, end = "") => `<!doctype html><html><body>${HEADER}<main>${main}</main><footer>${clickable}${ELARA_SEO}</footer>${end}</body></html>`;
+const POPUP_LINK = (url) => `<a href="#" onclick="window.open('${url}'); return false">Terms and Conditions</a>`;
+// The search with the lobby's chrome reading like terms; `pages` adds routes on casino.test, `jev` is the Jev stand-in.
+const searchClick = async (lobbyHtml, pages, jev = { notes: [] }, other = {}, chrome = true) => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    await site(page.context(), { "/": lobbyHtml, ...pages });
+    for (const [origin, routes] of Object.entries(other)) await page.context().route(`${origin}/**`, (r) => { const p = new URL(r.request().url()).pathname; return routes[p] ? r.fulfill({ status: 200, contentType: "text/html", body: routes[p] }) : r.abort("aborted"); });
+    await page.goto("https://casino.test/");
+    if (chrome) assert.ok(readsLikeTerms(await page.evaluate(() => document.body.innerText)), "the lobby's own chrome reads like terms");
+    const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+    return { ...r, tabs: page.context().pages().length };
+  } finally { await browser.close(); }
+};
+
+test("a terms click whose tab shows the lobby's chrome for 6 s and then the terms reads the terms, not the chrome", async () => {
+  const late = `<script>setTimeout(() => { document.querySelector("main").innerHTML = ${JSON.stringify(INTRO + GENERALS(12))}; }, 6000)</script>`;
+  const lobbyHtml = CLICK_CHROME(POPUP_LINK("/terms-popup.html"));
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/terms-popup.html": CLICK_CHROME(POPUP_LINK("/terms-popup.html"), "", late) }));
+  assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+  assert.equal(r.via, "click");
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+test("a terms click whose tab is only the lobby's chrome is not the terms", async () => {
+  const lobbyHtml = CLICK_CHROME(POPUP_LINK("/terms-popup.html"));
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/terms-popup.html": lobbyHtml }));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.some((t) => /^click "Terms and Conditions" → https:\/\/casino\.test\/terms-popup\.html \(lobby shell\)$/.test(t)), r.tried.join(" | "));
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+test("a terms click that navigates to a page that is only the lobby's chrome is not the terms", async () => {
+  const lobbyHtml = CLICK_CHROME(`<span onclick="location.href = '/app/terms'">Terms and Conditions</span>`);
+  const r = await withoutJev(() => searchClick(lobbyHtml, { "/app/terms": lobbyHtml }));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes('click "Terms and Conditions" (lobby shell)'), r.tried.join(" | "));
+});
+
+test("a terms click that opens a tab on another site is Jev's alone: no on Jev's no, yes on Jev's yes; a tab on the casino's own site is the pattern's", async () => {
+  const other = { "https://help.other.test": { "/terms.html": TERMS_PAGE() } };
+  const lobbyHtml = LOBBY(POPUP_LINK("https://help.other.test/terms.html"));
+  const log = [];
+  const no = await withJevKey(() => searchClick(lobbyHtml, {}, { notes: [], ask: fakeAsk({ accept: () => false, log }) }, other, false));
+  assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+  assert.ok(log.includes("page"), "Jev judged the tab");
+  const yes = await withJevKey(() => searchClick(lobbyHtml, {}, { notes: [], ask: fakeAsk({ accept: () => true }) }, other, false));
+  assert.equal(yes.href, "https://help.other.test/terms.html", yes.tried.join(" | "));
+  assert.equal(yes.via, "click");
+  const off = await withoutJev(() => searchClick(lobbyHtml, {}, { notes: [] }, other, false));
+  assert.equal(off.text, "", `no key: accepted ${off.href} via ${off.via}`);
+  // the same tab on the casino's own site is accepted on the pattern, whatever Jev says
+  const own = await withJevKey(() => searchClick(LOBBY(POPUP_LINK("/terms.html")), { "/terms.html": TERMS_PAGE() }, { notes: [], ask: fakeAsk({ accept: () => false }) }, {}, false));
+  assert.equal(own.href, "https://casino.test/terms.html", own.tried.join(" | "));
+});
+
+test("a Jev-only candidate is skipped while Jev is enabled but down, whether the footer question or the page question failed; without a key the pattern decides", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    // The general terms do not load, so the sportsbook's terms (a product-named link: Jev-only) are the next candidate.
+    await site(page, { "/": LOBBY(ELARA_FOOTER), "/spotsbook-terms-and-conditions": TERMS_PAGE("Sportsbook Terms and Conditions") });
+    const search = async (jev) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev); };
+    const down = await withJevKey(() => search({ notes: [], ask: async () => { throw new Error("jev http 529: overloaded"); } }));
+    assert.equal(down.text, "", `Jev down: accepted ${down.href}`);
+    const pageFails = async (state, questions) => { if (questions.is_terms) throw new Error("jev http 529: overloaded"); return fakeAsk()(state, questions); };
+    const failed = await withJevKey(() => search({ notes: [], ask: pageFails }));
+    assert.equal(failed.text, "", `Jev failed on the page: accepted ${failed.href}`);
+    const off = await withoutJev(() => search({ notes: [] }));
+    assert.equal(off.href, "https://casino.test/spotsbook-terms-and-conditions", off.tried.join(" | "));
+  } finally { await browser.close(); }
+});
+
+test("a shell whose hidden text is the lobby's hidden SEO block plus 1,600 characters of other copy is not the terms", async () => {
+  const copy = `<div hidden><p>${"Our live studio streams roulette and blackjack tables around the clock. ".repeat(23)}</p></div>`;
+  assert.ok(copy.replace(/<[^>]+>/g, "").length >= 1600);
+  const main = `<p>${"Play slots and live games every day. ".repeat(30)}</p>`;
+  const r = await searchChrome(CHROME(main, HIDDEN_SEO + copy), CHROME(main, HIDDEN_SEO));
+  assert.equal(r.text, "", `accepted ${r.href} via ${r.via}`);
+  assert.ok(r.tried.includes("https://casino.test/terms.html (lobby shell)"), r.tried.join(" | "));
+});
+
+test("a guessed path whose hidden terms sit under a <div> menu the lobby also hides is the terms (the menu alone is not the lobby's hidden shell)", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const shell = (main) => `<!doctype html><html><body><header><button>Log in</button><button>Join now</button></header>${DIV_MENU}<main>${main}</main><footer><a href="/about">About us</a></footer></body></html>`;
+      await site(page, { "/": shell(`<p>${"Play slots and live games every day. ".repeat(30)}</p>`), "/terms-and-conditions": shell(INTRO + `<div hidden>${GENERALS(14)}</div>`) });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.equal(r.via, "guess");
+      assert.equal(r.hidden, true);
+      assert.match(r.text, /14\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("otherDocsFor: the payments and KYC pages, none when Jev classified the lobby", () => {
+  const lobby = { url: "https://x.com/", links: [{ href: "https://x.com/payments", text: "Payments" }, { href: "https://x.com/kyc", text: "KYC" }] };
+  assert.deepEqual(otherDocsFor(lobby, { href: "", lobbyClass: null }).map((d) => d.kind), ["payments", "kyc"]);
+  assert.deepEqual(otherDocsFor(lobby, { href: "https://x.com/payments", lobbyClass: null }).map((d) => d.kind), ["kyc"]);
+  assert.deepEqual(otherDocsFor(lobby, { href: "", lobbyClass: "not_casino" }), []);
+});
+
+// winner.ro / eliteslots.ro: the footer's terms page is a hub whose body is "Descarcă documentul" -> a PDF on a CDN host
+// (y6v9r7t5.b-cdn.net, a file host). `docHost` serves documents with CORS headers, so the page reads them (nothing leaves
+// for the real host). `hits` records each document request.
+const HUB = (href, caption = "Download the document") => `<!doctype html><html><head><title>Terms &amp; Conditions</title></head><body><h1>Terms &amp; Conditions</h1><p><a href="${href}">${caption}</a></p></body></html>`;
+const docHost = (page, origin, files, hits = []) => page.route(`${origin}/**`, (r) => {
+  const p = new URL(r.request().url()).pathname;
+  hits.push(p);
+  return files[p] ? r.fulfill({ status: 200, contentType: "application/pdf", headers: { "access-control-allow-origin": "*" }, body: files[p] }) : r.abort("aborted");
+});
+test("a terms hub on the casino's own domain that links its PDF on a CDN file host: the PDF is found through the hop", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), hits = [];
+      const href = "https://y6v9r7t5.b-cdn.net/documents/termsAndConditions/2/ro/Terms%20and%20Conditions.pdf";
+      await site(page, { "/": LOBBY(`<a href="/customer-support/terms-and-conditions">Terms and Conditions</a>`), "/customer-support/terms-and-conditions": HUB(href, "Descarcă documentul") });
+      await docHost(page, "https://y6v9r7t5.b-cdn.net", { "/documents/termsAndConditions/2/ro/Terms%20and%20Conditions.pdf": termsPdf() }, hits);
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.equal(r.href, href);
+      assert.equal(r.via, "https://casino.test/customer-support/terms-and-conditions");
+      assert.match(r.text, /General Terms and Conditions/);
+      assert.ok(hits.length >= 1, "the document was fetched");
+    } finally { await browser.close(); }
+  });
+});
+
+// The casino's own hub vouches for a document on any host only so far as to offer it: on a host that is neither the
+// casino's nor a file host ("Blackjack" -> a game provider's PDF), only Jev may accept it, however much it reads like terms.
+test("a document the casino's own hub links on a host that is neither the casino's nor a file host is Jev's alone", async () => {
+  const run = async (jev) => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": HUB("https://provider.example/rules/blackjack.pdf", "Blackjack") });
+      await docHost(page, "https://provider.example", { "/rules/blackjack.pdf": termsPdf() });
+      await page.goto("https://casino.test/");
+      return await fetchTerms(page, await readLobby(page, { quietMs: 2000 }), jev);
+    } finally { await browser.close(); }
+  };
+  const off = await withoutJev(() => run({ notes: [] }));
+  assert.equal(off.text, "", `accepted ${off.href} via ${off.via}`);
+  assert.ok(off.tried.includes("https://provider.example/rules/blackjack.pdf (pdf not terms-like)"), off.tried.join(" | "));
+  const log = [];
+  const no = await withJevKey(() => run({ notes: [], ask: fakeAsk({ accept: () => false, log }) }));
+  assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+  assert.ok(log.includes("page"), "Jev judged the document");
+  const yes = await withJevKey(() => run({ notes: [], ask: fakeAsk({ accept: (p) => /blackjack\.pdf$/.test(p.url) }) }));
+  assert.equal(yes.pdf, true, yes.tried.join(" | "));
+  assert.equal(yes.href, "https://provider.example/rules/blackjack.pdf");
+});
+
+// A document the hub links on the casino's own domain that redirects to another host: the link the casino gave decides.
+// The site is 127.0.0.1; the redirect goes to localhost, neither the casino's host nor a file host.
+test("a hub's own-domain document that redirects to another host is judged on the link, not the final URL", async () => {
+  const pdf = termsPdf();
+  const server = createServer((req, res) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/documents/terms") { res.writeHead(302, { location: `http://localhost:${port}/t/terms-v7` }); return res.end(); }
+    if (u.pathname === "/t/terms-v7") { res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length }); return res.end(pdf); }
+    const pages = { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": HUB("/documents/terms") };
+    res.writeHead(pages[u.pathname] ? 200 : 404, { "content-type": "text/html" });
+    res.end(pages[u.pathname] || "<html><body>Not found</body></html>");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.route(`http://127.0.0.1:${port}/**`, (r) => (["/", "/legal/terms-and-conditions", "/documents/terms"].includes(new URL(r.request().url()).pathname) ? r.continue() : r.abort("aborted")));
+      await page.goto(`http://127.0.0.1:${port}/`);
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.pdf, true, r.tried.join(" | "));
+      assert.match(r.href, /\/(documents\/terms|t\/terms-v7)$/);
+    } finally { await browser.close(); server.close(); }
+  });
+});
+
+// The vouching is the casino's own page's: a page on another site (here a Jev pick on partner.test) that links its own PDF
+// does not make that PDF the casino's, so only Jev may accept it.
+test("a PDF that a page on another site links is Jev's alone", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), pdf = termsPdf();
+      const hub = `<!doctype html><html><head><title>Terms and Conditions</title></head><body><h1>Terms and Conditions</h1><p><a href="https://partner.test/docs/terms.pdf">Download the document</a></p></body></html>`;
+      await page.route(/^https:\/\/(casino|partner)\.test\//, (r) => {
+        const u = new URL(r.request().url());
+        if (u.host === "casino.test" && u.pathname === "/") return r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="https://partner.test/terms">Terms</a>`) });
+        if (u.host === "partner.test" && u.pathname === "/terms") return r.fulfill({ status: 200, contentType: "text/html", body: hub });
+        if (u.host === "partner.test" && u.pathname === "/docs/terms.pdf") return r.fulfill({ status: 200, contentType: "application/pdf", body: pdf });
+        return r.abort("aborted");
+      });
+      const search = async (accept, log = []) => { await page.goto("https://casino.test/"); return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask: fakeAsk({ pick: "partner.test/terms", accept, log }) }); };
+      const log = [];
+      const no = await search(() => false, log);
+      assert.equal(no.text, "", `accepted ${no.href} via ${no.via}`);
+      assert.ok(no.tried.includes("https://partner.test/docs/terms.pdf (pdf not terms-like)"), no.tried.join(" | "));
+      assert.ok(log.includes("page"), "Jev judged the PDF");
+      const yes = await search((p) => /\.pdf$/.test(p.url));
+      assert.equal(yes.pdf, true, yes.tried.join(" | "));
+      assert.equal(yes.href, "https://partner.test/docs/terms.pdf");
+    } finally { await browser.close(); }
+  });
+});
+
+// ecasino.cz publishes its general terms ("Všeobecné obchodní podmínky") only as a .docx.
+test("a footer terms link to a .docx: the Word document is read and stored as the terms", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const file = docx(["General Terms and Conditions", ...Array.from({ length: 10 }, (_, i) => `${i + 1}. ${GENERAL(i)}`)]);
+      await page.route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/") return r.fulfill({ status: 200, contentType: "text/html", body: LOBBY(`<a href="/files/terms.docx">Terms and Conditions</a>`) });
+        if (p === "/files/terms.docx") return r.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", body: file });
+        return r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.docx, true, r.tried.join(" | "));
+      assert.equal(r.pdf, undefined);
+      assert.equal(r.href, "https://casino.test/files/terms.docx");
+      assert.ok(r.text.length >= 3000, `${r.text.length} chars`);
+      assert.match(r.text, /^General Terms and Conditions\n1\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+// blitz.be from Norway: "You are not in an authorized country. If you have a VPN activated, turn it off and try again" (340 characters).
+test("lobbyStatus: an unauthorised-country or turn-off-your-VPN notice is geo_blocked; a lobby's VPN rule far down its footer is not", () => {
+  const blitz = "You are not in an authorized country. If you have a VPN activated, turn it off and try again. If the problem persists, contact support. Ray ID: 8f2c1a7b9d3e4f50 Country code : NO";
+  assert.equal(lobbyStatus({ text: blitz, finalUrl: "https://blitz.be/" }), "geo_blocked");
+  for (const t of ["You are not in an authorized country.", "Access from an unauthorised territory.", "Not-authorized region detected.", "Please switch off your VPN and reload the page.", "It looks like you use a VPN. Please disable your VPN to continue."])
+    assert.equal(lobbyStatus({ text: `${t} ${"Contact support for help. ".repeat(4)}`, finalUrl: "https://x.com/" }), "geo_blocked", t);
+  const lobby = "Play slots and live games every day. ".repeat(150) + "VPN use is prohibited by our terms. Please disable any VPN before you play. " + "Licensed and regulated. ".repeat(20);
+  assert.ok(lobby.indexOf("VPN") > 5000 && lobby.length > 6000);
+  assert.equal(lobbyStatus({ text: lobby, finalUrl: "https://x.com/" }), "ok");
+  assert.equal(lobbyStatus({ text: "Our VPN-friendly lobby: all games are open to every authorized player. " + "Play slots and live games every day. ".repeat(40), finalUrl: "https://x.com/" }), "ok", "no instruction to turn a VPN off");
+  // A lobby's account-sanction wording about VPNs is no wall, even at the top of a short page.
+  const filler = "Play slots and live games every day. ".repeat(10);
+  for (const t of ["Using a VPN may lead us to disable your account.", "Accounts using a VPN will be deactivated.", "VPN users: we may switch off bonuses for your account.", "If we detect a VPN, we may disable withdrawals and deactivate the account.", "Accounts deactivated for VPN use are not refunded."])
+    assert.equal(lobbyStatus({ text: `${t} ${filler}`, finalUrl: "https://x.com/" }), "ok", t);
+  // A wall opens with its notice: a request to disable the VPN past the first 1,500 characters is a lobby's rule.
+  assert.equal(lobbyStatus({ text: "Play slots and live games every day. ".repeat(45) + "Please disable your VPN before playing. " + filler, finalUrl: "https://x.com/" }), "ok", "past 1,500 characters");
+  assert.equal(lobbyStatus({ text: "Play slots and live games every day. ".repeat(45) + blitz, finalUrl: "https://x.com/" }), "ok", "blitz.be's wording past 1,500 characters");
+});
+
+// 69games.cz: the terms page shows only the consent banner's text (1,496 characters) until consent is given. Here the
+// banner covers a page that renders the document only once "Accept all" is clicked.
+const CONSENT_PAGE = (late = false) => {
+  const doc = JSON.stringify(`<h1>Terms and Conditions</h1>${GENERALS(12)}`);
+  const banner = `<div class="cookie-consent" id="cc"><p>${"This website uses cookies to give you the best experience and to measure traffic. ".repeat(8)}</p><button onclick="document.getElementById('cc').remove(); document.getElementById('doc').innerHTML = ${doc.replace(/"/g, "&quot;")}">Accept all</button><button>Settings</button></div>`;
+  // `late`: the banner arrives 2 s after the page loads, as a consent script's dialog does.
+  return `<!doctype html><html><head><title>Terms and Conditions</title></head><body><main id="doc"></main>${late ? `<script>setTimeout(() => document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(banner)}), 2000)</script>` : banner}</body></html>`;
+};
+test("a cookie wall on a candidate page is dismissed before the page is read, also when the banner arrives late", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      for (const late of [false, true]) {
+        await page.unrouteAll();
+        await site(page, { "/": LOBBY(`<a href="/legal/terms-and-conditions">Terms and Conditions</a>`), "/legal/terms-and-conditions": CONSENT_PAGE(late) });
+        await page.goto("https://casino.test/");
+        const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+        assert.equal(r.href, "https://casino.test/legal/terms-and-conditions", `late ${late}: ${r.tried.join(" | ")}`);
+        assert.equal(r.via, "link");
+        assert.match(r.text, /12\. These terms and conditions govern/);
+        assert.ok(!/uses cookies/.test(r.text), "the banner is gone");
+      }
+    } finally { await browser.close(); }
+  });
+});
+
+test("a cookie wall on a guessed path is dismissed before the page is read", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      await site(page, { "/": NO_LINKS_LOBBY, "/terms-and-conditions": CONSENT_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms-and-conditions", r.tried.join(" | "));
+      assert.equal(r.via, "guess");
+      assert.match(r.text, /12\. These terms and conditions govern/);
+    } finally { await browser.close(); }
+  });
+});
+
+test("a cookie wall on a tab a terms click opened is dismissed before the tab is read", async () => {
+  const r = await withoutJev(() => searchClick(CLICK_CHROME(POPUP_LINK("/terms-popup.html")), { "/terms-popup.html": CONSENT_PAGE() }));
+  assert.equal(r.href, "https://casino.test/terms-popup.html", r.tried.join(" | "));
+  assert.equal(r.via, "click");
+  assert.match(r.text, /12\. These terms and conditions govern/);
+  assert.equal(r.tabs, 1, "the tab is closed");
+});
+
+// goluckycasino.com: no terms link on the lobby; its footer's "Support" page is where the legal pages hang.
+const SUPPORT_PAGE = (body) => `<!doctype html><html><head><title>Support</title></head><body><main><h1>Support</h1><p>${"Our support team is here to help you around the clock. ".repeat(10)}</p>${body}</main></body></html>`;
+test("helpLinks: the lobby's own legal, support, FAQ, about, info and contact pages, best kind first, never login, affiliate, blog, promo, game, bonus or security pages, nor the lobby again", () => {
+  const o = "https://casino.test";
+  const links = [
+    { href: `${o}/faq`, text: "FAQ", footer: false }, { href: `${o}/support`, text: "Support", footer: true },
+    { href: `${o}/affiliates`, text: "Affiliate Support", footer: true }, { href: `${o}/blog/help`, text: "Blog", footer: true },
+    { href: "https://other.test/help", text: "Help", footer: true }, { href: `${o}/#contact`, text: "Contact", footer: true },
+    { href: `${o}/en/customer-service`, text: "", footer: true }, { href: `${o}/login`, text: "Help with login", footer: true },
+    { href: `${o}/docs/info.pdf`, text: "Info", footer: true }, { href: `${o}/games`, text: "Games", footer: true },
+  ];
+  assert.deepEqual(helpLinks(links, `${o}/`).map((l) => l.href), [`${o}/support`, `${o}/en/customer-service`, `${o}/faq`]);
+  // By kind: legal, then support or help, then FAQ, then about, info or contact; the footer's first within a kind.
+  const footer = (pairs) => pairs.map(([path, text]) => ({ href: `${o}${path}`, text, footer: true }));
+  assert.deepEqual(helpLinks(footer([["/faq", "FAQ"], ["/about-us", "About Us"], ["/support", "Support"], ["/contact", "Contact"], ["/legal-info", "Legal"]]), `${o}/`).map((l) => l.href),
+    [`${o}/legal-info`, `${o}/support`, `${o}/faq`, `${o}/about-us`, `${o}/contact`]);
+  // A game's, a bonus's or a security page, and the lobby with only a query or a hash, are not help pages.
+  assert.deepEqual(helpLinks(footer([["/game-info/starburst", "Starburst"], ["/bonus-info", "Bonus info"], ["/about-bonuses", "About our bonuses"], ["/information-security", "Information security"], ["/?page=about", "About"], ["/#help", "Help"], ["/slots/help", "Help"]]), `${o}/`), []);
+});
+
+test("a lobby with no terms link: the terms linked from its support page are found (via help-page); a support page without one is noted and the guesses still run", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const lobbyHtml = LOBBY(`<a href="/support">Support</a><a href="/privacy">Privacy Policy</a><a href="/responsible-gaming">Responsible Gaming</a>`);
+      await site(page, { "/": lobbyHtml, "/support": SUPPORT_PAGE(`<p><a href="/terms.html">Terms and Conditions</a></p>`), "/terms.html": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+      assert.ok(r.text.length >= 3000);
+      await page.unrouteAll();
+      await site(page, { "/": lobbyHtml, "/support": SUPPORT_PAGE(""), "/terms-and-conditions": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const none = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(none.tried.includes("help page https://casino.test/support (no terms link)"), none.tried.join(" | "));
+      assert.equal(none.href, "https://casino.test/terms-and-conditions", none.tried.join(" | "));
+      assert.equal(none.via, "guess");
+    } finally { await browser.close(); }
+  });
+});
+
+// goluckycasino.com, betjoycasino.com (#registerPopup): "Sign up" is a `#` link or a button that opens a registration
+// modal, and only the modal links the terms ("I accept the Terms & Conditions"). `control`: the sign-up link or button
+// (it calls openReg()); `accept`: the HTML of the terms acceptance inside the modal.
+const SIGNUP_LOBBY = (control, accept) => LOBBY(`<a href="/privacy">Privacy Policy</a>`, `${control}<script>function openReg() { setTimeout(() => document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(`<div class="modal" role="dialog" id="registerPopup"><h2>Create your account</h2><form><input name="email"><input type="password" name="pw"><input name="nick"><label><input type="checkbox"> I accept the ${accept}</label><div id="tc"></div><button type="button">Register</button></form></div>`)}), 300); }
+function showTerms() { document.getElementById("tc").innerHTML = ${JSON.stringify(`<h2>Terms and Conditions</h2>${GENERALS(8)}`)}; }</script>`);
+test("a sign-up link or button that opens a modal: the modal's terms link is found, and so is its in-place terms (via signup-modal); a button that goes to a registration page reads that page", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const search = async (pages) => {
+        await page.unrouteAll();
+        await site(page, { "/terms.html": TERMS_PAGE(), ...pages });
+        await page.goto("https://casino.test/");
+        return fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      };
+      const link = await search({ "/": SIGNUP_LOBBY(`<a href="#" onclick="openReg(); return false">Sign up</a>`, `<a href="/terms.html">Terms &amp; Conditions</a>`) });
+      assert.equal(link.href, "https://casino.test/terms.html", link.tried.join(" | "));
+      assert.equal(link.via, "signup-modal");
+      assert.ok(!link.tried.some((t) => t.startsWith("signup page")), link.tried.join(" | "));
+      const inPlace = await search({ "/": SIGNUP_LOBBY(`<button class="btn" onclick="openReg()">Register now</button>`, `<span class="tc-link" onclick="showTerms()">Terms &amp; Conditions</span>`) });
+      assert.equal(inPlace.via, "signup-modal", inPlace.tried.join(" | "));
+      assert.match(inPlace.text, /^Terms and Conditions\n/);
+      assert.ok(inPlace.text.length >= 3000, `${inPlace.text.length} chars`);
+      const away = await search({ "/": LOBBY(`<a href="/privacy">Privacy Policy</a>`, `<button onclick="location.href = '/account/new'">Join now</button>`), "/account/new": SUPPORT_PAGE(`<p>I accept the <a href="/terms.html">Terms and Conditions</a></p>`) });
+      assert.equal(away.href, "https://casino.test/terms.html", away.tried.join(" | "));
+      assert.equal(away.via, "signup-page");
+    } finally { await browser.close(); }
+  });
+});
+
+// 2aries.com, legolas.bet: an affiliate or review site whose own /terms page Jev rightly rejects (0.2). The lobby question
+// is asked whenever the search ends without the terms, candidates or not.
+test("a lobby whose terms link Jev rejects is still classified by Jev's lobby judgment: not a gambling site becomes not_casino, a gambling site stays unclassified", async () => {
+  await withJevKey(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const review = `<!doctype html><html><head><title>Terms of Use</title></head><body><h1>Terms of Use</h1>${Array.from({ length: 30 }, (_, i) => `<p>Review ${i + 1}: we compare online casino number ${i + 1} and write an honest review of it for our readers.</p>`).join("")}</body></html>`;
+      await site(page, { "/": LOBBY(`<a href="/terms">Terms</a>`), "/terms": review });
+      const search = async (option, p, log) => {
+        await page.goto("https://casino.test/");
+        const ask = async (state, questions) => {
+          log.push(Object.keys(questions)[0]);
+          if (questions.has_terms) return { has_terms: { noul: 0.1 }, terms_link: { probabilities: {} } };
+          if (questions.kind) return { kind: { type: "choice", choice: option, confidence: 0.9, probabilities: { [option]: p, other: 1 - p } } };
+          return { is_terms: { noul: 0.2 } };
+        };
+        return fetchTerms(page, await readLobby(page, { quietMs: 2000 }), { notes: [], ask });
+      };
+      const log = [];
+      const affiliate = await search("not_gambling_site", 0.95, log);
+      assert.equal(affiliate.lobbyClass, "not_casino", affiliate.tried.join(" | "));
+      assert.ok(!affiliate.text, `accepted ${affiliate.href}`);
+      assert.ok(affiliate.tried.includes("https://casino.test/terms (not terms-like)"), affiliate.tried.join(" | "));
+      assert.ok(log.includes("is_terms"), "Jev judged the page");
+      assert.equal(log.filter((q) => q === "kind").length, 1, "the lobby question is asked once");
+      const casino = await search("gambling_site", 0.95, []);
+      assert.equal(casino.lobbyClass ?? null, null);
+      assert.ok(!casino.text, `accepted ${casino.href}`);
+    } finally { await browser.close(); }
+  });
+});
+
+// goluckycasino.com's footer order: "FAQ · About Us · Support". The support page, where the legal pages hang, is opened
+// although two other help pages come before it.
+test("of a footer's FAQ, About and Support pages, the support page is opened first and its terms found", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      await site(page, {
+        "/": LOBBY(`<a href="/faq">FAQ</a><a href="/about-us">About Us</a><a href="/support">Support</a><a href="/privacy">Privacy Policy</a>`),
+        "/faq": SUPPORT_PAGE(""), "/about-us": SUPPORT_PAGE(""), "/support": SUPPORT_PAGE(`<p><a href="/terms.html">Terms and Conditions</a></p>`), "/terms.html": TERMS_PAGE(),
+      });
+      await page.goto("https://casino.test/");
+      read.length = 0;
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+      assert.ok(!read.includes("/faq") && !read.includes("/about-us"), read.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+// A help path an app routes to its lobby shows the lobby again: its clickables were clicked on the lobby already.
+test("a help page that shows the lobby again is left as the lobby shell, and the lobby's clickable is not clicked a second time", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      let clicks = 0;
+      const lobbyHtml = LOBBY(`<a href="/help">Help</a><span onclick="fetch('/clicked')">Terms &amp; Conditions</span>`);
+      await page.route("https://casino.test/**", (r) => {
+        const p = new URL(r.request().url()).pathname;
+        if (p === "/clicked") { clicks++; return r.fulfill({ status: 204, body: "" }); }
+        if (p === "/" || p === "/help") return r.fulfill({ status: 200, contentType: "text/html", body: lobbyHtml });
+        return r.abort("aborted");
+      });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(r.tried.includes("help page https://casino.test/help (lobby shell)"), r.tried.join(" | "));
+      assert.equal(clicks, 1, `the lobby's clickable was clicked ${clicks} times: ${r.tried.join(" | ")}`);
+    } finally { await browser.close(); }
+  });
+});
+
+// The casino's budget: past `deadline` the help and modal steps, the guesses and the low-score pass open nothing; on an
+// exit after the first that reached the lobby (`firstExit: false`) the help and modal steps do not run.
+test("past the casino deadline the help page, the sign-up modal and the guesses are skipped; on a later exit the help and modal steps do not run", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage(), read = [];
+      page.on("request", (r) => { if (r.isNavigationRequest()) read.push(new URL(r.url()).pathname); });
+      await site(page, { "/": SIGNUP_LOBBY(`<button class="btn" onclick="openReg()">Sign up</button>`, `<a href="/terms.html">Terms &amp; Conditions</a>`).replace("</footer>", `<a href="/support">Support</a></footer>`), "/support": SUPPORT_PAGE(""), "/terms-and-conditions": TERMS_PAGE() });
+      const search = async (opts) => { await page.goto("https://casino.test/"); const lobby = await readLobby(page, { quietMs: 2000 }); read.length = 0; const t0 = Date.now(); return { ...(await fetchTerms(page, lobby, { notes: [] }, opts)), ms: Date.now() - t0 }; };
+      const late = await search({ deadline: Date.now() - 1 });
+      assert.equal(late.text, "", `accepted ${late.href}`);
+      for (const line of ['signup modal "Sign up" skipped (casino deadline)', "help page https://casino.test/support skipped (casino deadline)", "guessing stopped (casino deadline)"]) assert.ok(late.tried.includes(line), `${line}: ${late.tried.join(" | ")}`);
+      assert.deepEqual(read, [], "nothing was opened");
+      assert.ok(late.ms < 5000, `took ${late.ms} ms`);
+      const later = await search({ firstExit: false });
+      assert.equal(later.href, "https://casino.test/terms-and-conditions", later.tried.join(" | "));
+      assert.ok(!later.tried.some((t) => /^(help page|signup modal)/.test(t)), later.tried.join(" | "));
+      assert.ok(!read.includes("/support"), read.join(" "));
+    } finally { await browser.close(); }
+  });
+});
+
+test("findSignupInPage: not a form's submit button or a sign-up through another service; modalPartsInPage: a popup named by its id", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const find = () => page.evaluate(`(${findSignupInPage})(${JSON.stringify(String.raw`\b(sign[\s-]?up|register|join( now)?|create (an )?account|registration)\b`)}, ${JSON.stringify(String.raw`log\s?in|sign\s?in|affiliate|terms|conditions|google|facebook|apple|telegram|steam|wallet|metamask|table|game`)})`);
+    await page.setContent(`<html><body><form><input name="email"><button>Register</button><input type="submit" value="Sign up"></form><button>Sign up with Google</button><button>Join table</button><a href="#">Join now</a></body></html>`);
+    assert.equal(await find(), "Join now");
+    await page.setContent(`<html><body><form><button>Register</button></form></body></html>`);
+    assert.equal(await find(), "");
+    await page.setContent(`<html><body><div id="registerPopupBox"><a href="https://casino.test/terms.html">Terms</a></div><a href="https://casino.test/other">Other</a></body></html>`);
+    assert.deepEqual((await page.evaluate(modalPartsInPage)).hrefs, ["https://casino.test/terms.html"]);
+  } finally { await browser.close(); }
+});
+
+// goluckycasino.com's help pages are the lobby's own app: the same long header over the page's own FAQ. Such a page is
+// read, not taken for the lobby shell.
+test("a help page under the lobby's 400-character header, with its own FAQ and a terms link, is read and the terms found", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const head = `<header><p>${"Golucky Casino slots live games jackpots. ".repeat(10)}</p></header>`;
+      const lobbyHtml = LOBBY(`<a href="/support">Support</a><a href="/privacy">Privacy Policy</a>`).replace("<body>", `<body>${head}`);
+      const faq = Array.from({ length: 30 }, (_, i) => `<p>Question ${i + 1}: how do I change setting number ${i + 1} of my profile? Open the menu and pick option ${i + 1}.</p>`).join("");
+      const help = `<!doctype html><html><body>${head}<main><h1>Support</h1>${faq}<p><a href="/terms.html">Terms and Conditions</a></p></main></body></html>`;
+      await site(page, { "/": lobbyHtml, "/support": help, "/terms.html": TERMS_PAGE() });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.ok(!r.tried.some((t) => /lobby shell/.test(t)), r.tried.join(" | "));
+      assert.equal(r.href, "https://casino.test/terms.html", r.tried.join(" | "));
+      assert.equal(r.via, "help-page");
+    } finally { await browser.close(); }
+  });
+});
+
+// Flamez: the site walls its terms page from this exit. The search stops there, before the help and modal steps, so the
+// next exit is still the first to search past the lobby's candidates (scrape.mjs reads `walledEarly`).
+test("a wall on a lobby candidate's page ends the search as walled early, before the help and modal steps", async () => {
+  await withoutJev(async () => {
+    const browser = await chromium.launch({ channel: "chrome", headless: true });
+    try {
+      const page = await browser.newPage();
+      const wall = `<!doctype html><html><body><h1>Just a moment...</h1><p>${"Checking your browser before accessing the site. ".repeat(20)}</p></body></html>`;
+      await site(page, { "/": LOBBY(`<a href="/terms-and-conditions">Terms and Conditions</a><a href="/support">Support</a>`), "/terms-and-conditions": wall, "/support": SUPPORT_PAGE("") });
+      await page.goto("https://casino.test/");
+      const r = await fetchTerms(page, await readLobby(page, { quietMs: 2000 }));
+      assert.equal(r.walled, true, r.tried.join(" | "));
+      assert.equal(r.walledEarly, true);
+      assert.ok(!r.tried.some((t) => t.startsWith("help page")), r.tried.join(" | "));
     } finally { await browser.close(); }
   });
 });

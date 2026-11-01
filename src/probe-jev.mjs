@@ -4,8 +4,9 @@
 // Usage: node --env-file=.env src/probe-jev.mjs <url> [--headed]
 import { chromium } from "playwright-core";
 import { settle, dismissCookies, readLobby, readDoc, readsLikeTerms, isParked, notCasino, bodyText, clip } from "./terms.mjs";
-import { termsCandidates, isPdf } from "./links.mjs";
+import { termsCandidates, isDoc } from "./links.mjs";
 import { pdfText } from "./pdf.mjs";
+import { docxText } from "./docx.mjs";
 import { jevEnabled, linkEntries, termsLinkQuestions, askJev, jevPicks, linkSummary, termsPageQuestion, acceptsPage, pageSummary } from "./jev.mjs";
 
 const url = process.argv.slice(2).find((a) => !a.startsWith("--"));
@@ -52,21 +53,21 @@ try {
     if (pick.kind === "text") {
       const c = lobby.clickables.find((x) => x.text === pick.text);
       if (c) { await page.click(c.sel, { timeout: 10000 }).catch((e) => console.log(`click failed: ${clip(e.message, 80)}`)); await settle(page); }
-    } else if (isPdf(pick.href)) {
+    } else if (isDoc(pick.href)) {
       // As the scraper does: the bytes are fetched with the session's cookies and read in Node.
-      try { const r = await page.request.get(pick.href, { timeout: 30000 }); if (!r.ok()) throw new Error(`http ${r.status()}`); d = { ok: true, text: await pdfText(await r.body()), pdf: true }; }
-      catch (e) { console.log(`pdf failed: ${clip(e.message, 80)}`); d = { ok: false, text: "", note: "pdf unreadable" }; }
+      try { const r = await page.request.get(pick.href, { timeout: 30000 }); if (!r.ok()) throw new Error(`http ${r.status()}`); const b = await r.body(); d = { ok: true, text: b.length >= 4 && b.readUInt32LE(0) === 0x04034b50 ? docxText(b) : await pdfText(b), file: true }; }
+      catch (e) { console.log(`file failed: ${clip(e.message, 80)}`); d = { ok: false, text: "", note: "file unreadable" }; }
     } else {
       await page.goto(pick.href, { waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => console.log(`goto failed: ${clip(e.message, 80)}`));
     }
     d ||= await readDoc(page, 35000, readsLikeTerms);
-    console.log(`page ${d.pdf ? pick.href : page.url()}: ok=${d.ok} ${d.note ? `note=${d.note} ` : ""}${d.hidden ? "hidden " : ""}${d.pdf ? "pdf " : ""}${d.text.length} chars, readsLikeTerms=${readsLikeTerms(d.text)}`);
+    console.log(`page ${d.file ? pick.href : page.url()}: ok=${d.ok} ${d.note ? `note=${d.note} ` : ""}${d.hidden ? "hidden " : ""}${d.file ? "file " : ""}${d.text.length} chars, readsLikeTerms=${readsLikeTerms(d.text)}`);
     console.log(`  ${clip(d.text, 200)}`);
     if (!readsLikeTerms(d.text)) {
       if (!jevEnabled()) console.log("jev page: off");
       else if (d.text.length < 500) console.log("jev page: not asked (text under 500 chars)");
       else {
-        const meta = d.pdf ? { url: pick.href, title: "", headings: [] } : await page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
+        const meta = d.file ? { url: pick.href, title: "", headings: [] } : await page.evaluate(() => ({ url: location.href, title: document.title, headings: [...document.querySelectorAll("h1, h2, h3")].map((h) => h.innerText.trim()).filter(Boolean) })).catch(() => ({ url: page.url(), title: "", headings: [] }));
         try {
           const pq = termsPageQuestion({ ...meta, text: d.text });
           const pa = await askJev(pq.state, pq.questions);

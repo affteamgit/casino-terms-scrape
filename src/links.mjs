@@ -2,20 +2,72 @@
 // scored rather than taking the first match: promo cards carry "T&Cs apply" links to the home page or to the
 // promotion's own terms, and those sit above the footer in the DOM.
 const TERMS_PATH = /terms|conditions|\btos\b|\bt-?and-?c|\bt&c|\bagb\b|termos|condi[cç]|r[eè]gles|regulamin|pravila|kurallar|szabály|\blegal\b|general-?rules|user-?agreement|\brules\b/i;
-export const TERMS_TEXT = /terms|conditions|t\s*&\s*c|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår/i;
+// The terms words of the languages beyond the first dozen, as regex source. `\b` does not work on non-Latin scripts, so
+// those words match as substrings; short or common Latin words keep it. TERMS_I18N words mean terms and conditions: the
+// candidate scoring, Jev's entry filter, the click texts and the page gate's word count all use them.
+// Known gaps: Greek `όροι` is the accented form only, Hebrew `תנאים` misses the construct "תנאי", Vietnamese needs NFC text.
+export const TERMS_I18N = [
+  "voorwaarden", // Dutch
+  "\\btermini\\b|condizioni", // Italian
+  "\\bt[ée]rminos\\b", // Spanish
+  "\\buslovi\\b|\\buvjeti\\b|\\bpogoji\\b", // Serbian, Croatian, Bosnian, Slovenian
+  "podm(í|ie)nky", // Czech, Slovak
+  "\\btermen(i|ii)\\b", // Romanian
+  "feltételek", // Hungarian
+  "όροι", // Greek
+  "şartlar|koşullar", // Turkish
+  "الشروط|ال[أا]حكام", // Arabic
+  "תנאים", // Hebrew
+  "ข้อกำหนด|เงื่อนไข", // Thai
+  "利用規約", // Japanese
+  "条款|條款", // Chinese
+  "이용약관|약관", // Korean
+  "\\bsyarat|ketentuan|\\bterma\\b", // Indonesian, Malay
+  "điều khoản", // Vietnamese
+  "\\bnoteikumi\\b", // Latvian
+  "tingimused", // Estonian
+  "умови", // Ukrainian
+].join("|");
+// Words that name the terms but also a game's rules or a privacy policy ("Pravila igre", "Adatvédelmi szabályzat",
+// "游戏规则"): a link captioned with them is worth showing to Jev and trying as a candidate, but they do not count a
+// page as terms (TERMS_WORDS leaves them out). Turkish `kurallar` stays off the possessive "kuralları" of "oyun kuralları".
+export const RULES_I18N = [
+  "\\bpravila\\b", // Serbian, Croatian, Bosnian, Slovenian
+  "szabályzat", // Hungarian
+  "\\bkurallar(?![a-zçğıöşü])", // Turkish
+  "taisyklės", // Lithuanian
+  "规则|規則", // Chinese
+].join("|");
+// A caption that is a privacy policy or a game's rules in the new languages (the English ones are in NOT_TERMS below).
+// Serbian/Croatian "igre" is no veto: the general terms are "Opći uvjeti igre" / "Opšti uslovi igre", and gambling itself
+// is "igre na sreću". Only the narrow "pravila igre" / "pravila igara" (game rules) is one: such a caption is no terms
+// candidate and no click target, and the word never counts a page as terms (TERMS_WORDS leaves `pravila` out).
+export const NOT_TERMS_I18N = [
+  "pravila ig(re|ara)(?! na sre)", // game rules: Serbian/Croatian "Pravila igre" / "Pravila igara"; "Pravila igre na sreću" (rules of gambling) stays a candidate
+  "adatvédelm|adatkezel|privatnost|zasebnost|ochrana (osobních|osobných) údajů|gizlilik|confiden[țt]ialitate", // privacy: Hungarian, Serbian/Croatian, Slovenian, Czech/Slovak, Turkish, Romanian
+  "隐私|隱私|プライバシー|개인정보", // privacy: Chinese, Japanese, Korean
+  "spielregeln|\\bspiele?\\b|\\boyun(?![a-zçğıöşü])|oyunlar|游戏|遊戲|ゲーム|게임|pelisäännöt", // games: German, Turkish, Chinese, Japanese, Korean, Finnish
+].join("|");
+export const TERMS_TEXT = new RegExp(String.raw`terms|conditions|\bt\s*&\s*cs?\b|\btos\b|user[-\s]agreement|termos|condi[cç][õo]es|condiciones|bedingungen|\bagb\b|r[eè]gles|regulamin|общие условия|правила|vilk[åa]r|villkor|betingelser|ehdot|käyttöehdot|regler og vilkår|${TERMS_I18N}|${RULES_I18N}`, "i");
+// The general terms talk about terms throughout; a help-centre home page or a promotion card does not.
+const TERMS_WORDS = new RegExp(`\\bterms?\\b|\\bconditions?\\b|agreement|termos|condi[cç]|\\bagb\\b|bedingungen|r[eè]gles|regulamin|условия|правила|şartlar|villkor|vilkår|ehdot|voorwaarden|${TERMS_I18N}`, "gi");
+export const readsLikeTerms = (t) => t.length >= 2000 && (t.match(TERMS_WORDS) || []).length >= 5;
 // A page whose own name is the general terms (the path's last segment) is a candidate whatever its caption says:
 // horseshoeonlinecasino.com's footer links /support/terms-and-conditions as "Privacy Policy".
 const STRONG_TERMS_PATH = /terms-?(and-?)?conditions|terms-of-(service|use)|user-agreement|general-terms/i;
 // A product's own terms: the casino's general terms rank above them.
 export const PRODUCT = /\b(poker|sports?(book|betting)?|racing|horse|e-?sports?|lottery|bingo)\b/i;
-const NOT_TERMS = /privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your/i;
+const NOT_TERMS = new RegExp(String.raw`privacy|cookie|responsible|safer|affiliate|partner|(sport|racing|poker|game|betting)s?.?rules|rules-of|complaint|dispute|aml|kyc|know-?your|${NOT_TERMS_I18N}`, "i");
 const PROMO = /promo|offer|welcome|bonus|campaign|tournament|registration|free-?spin|jackpot|\brace\b|drops?\b|vip\b|loyalty|refer|lottery|cashback|reload|giveaway|competition|challenge|wheel|quest|mission/i;
 const PAYMENTS = /payment|banking|withdraw|cashier|deposit[-\s]?(methods|options)|payout/i;
 const KYC = /\bkyc\b|\baml\b|know[-\s]your|verification|anti[-\s]money/i;
-// Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront). Other domains are never the terms:
-// a regulator's or a game provider's /terms must not win.
-export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net)$|^(cdn|static|files|assets|docs)\./i;
+// Hosts casinos park their legal PDFs on (betico.pro's terms live on CloudFront, winner.ro's on b-cdn.net, ecasino.cz's on
+// imagekit.io, momangcasino.se's on cdn1.svenskaspel.net). Other domains are never the terms: a regulator's or a game
+// provider's /terms must not win.
+export const FILE_HOST = /(^|\.)(cloudfront\.net|amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net|b-cdn\.net|imagekit\.io|cloudinary\.com|digitaloceanspaces\.com|azureedge\.net|akamaized\.net|fastly\.net)$|^(cdn\d*|static|files|assets|docs)\./i;
 export const isPdf = (u) => /\.pdf(\?|#|$)/i.test(u);
+/** A file document the scraper reads: a PDF (pdf.mjs) or a Word DOCX (docx.mjs). */
+export const isDoc = (u) => /\.(pdf|docx)(\?|#|$)/i.test(u);
 
 /** A web address's host, without www and lowercased; "" for another scheme (javascript:, chrome-error:) or no URL. */
 export const host = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.replace(/^www\./, "").toLowerCase() : ""; } catch { return ""; } };
@@ -87,20 +139,25 @@ export function regionalSites(links, pageUrl, country = "") {
 
 /**
  * A thin terms page that only says "use the link below to view or download the Terms of Use" (clubscasino.com):
- * the links on it that lead to the document. A PDF, or a link whose text says download, view, open or read, or names
- * the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
- * casino's own domain or a file host. PDFs and links that name the terms come first; at most two.
+ * the links on it that lead to the document. A PDF or DOCX, or a link whose text says download, view, open or read, or
+ * names the terms (a bare verb needs a document-shaped target: .pdf/.doc or an uploads/files/docs/media path); on the
+ * casino's own domain or a file host. A PDF or Word file linked from a page on the casino's own domain (`own`: the
+ * casino's registrable domain, the page's own by default) is offered whatever host serves it; fetchTerms leaves one on a
+ * host that is neither the casino's nor a file host to Jev. PDFs and links that name the terms come first; at most two.
  */
-export function docLinks(links, pageUrl) {
-  const home = registrable(host(pageUrl)), seen = new Set();
-  const rank = (l) => (isPdf(l.href) ? 2 : 0) + (TERMS_PATH.test(path(l.href)) || TERMS_TEXT.test(l.text || "") ? 3 : 0);
+const FILE_DOC = /\.(pdf|docx?)(\?|#|$)/i;
+export function docLinks(links, pageUrl, own = registrable(host(pageUrl))) {
+  const home = registrable(host(pageUrl)), seen = new Set(), vouches = withinDomain(host(pageUrl), own);
+  // A document on the casino's own domain or a file host goes ahead of one on another host the page links.
+  const near = (l) => withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href));
+  const rank = (l) => (isDoc(l.href) ? 2 : 0) + (TERMS_PATH.test(path(l.href)) || TERMS_TEXT.test(l.text || "") ? 3 : 0) + (near(l) ? 1 : 0);
   return links.filter((l) => {
     if (!/^https?:/i.test(l.href) || isHome(l.href) || l.href === pageUrl || seen.has(l.href)) return false;
     const text = (l.text || "").trim(), name = path(l.href).split("/").filter(Boolean).pop() || "";
     // A verb alone ("Read more") is not enough: it has to lead to something shaped like a document.
     const verb = /\b(download|view|open|read)\b/i.test(text);
-    if (!(isPdf(l.href) || TERMS_TEXT.test(text) || (verb && (/\.(pdf|docx?)(\?|#|$)/i.test(l.href) || /(^|\/)(uploads?|files|docs|documents|static|media)(\/|$)/i.test(path(l.href)))))) return false;
-    if (!(withinDomain(host(l.href), home) || FILE_HOST.test(host(l.href)))) return false;
+    if (!(isDoc(l.href) || TERMS_TEXT.test(text) || (verb && (FILE_DOC.test(l.href) || /(^|\/)(uploads?|files|docs|documents|static|media)(\/|$)/i.test(path(l.href)))))) return false;
+    if (!(near(l) || (vouches && FILE_DOC.test(l.href)))) return false;
     if (NOT_TERMS.test(text + " " + name) || PROMO.test(text + " " + name)) return false;
     seen.add(l.href);
     return true;
@@ -132,6 +189,35 @@ export function siblingGuesses(links, pageUrl) {
 }
 
 /**
+ * The general terms next to a rejected promotion's or product's page, on its host: (i) the path without its promotion or
+ * product segments, when what remains names the terms (/en/terms/bonus/ -> /en/terms/); (ii) the last such segment
+ * without its promotion or product words, when what remains names the terms (/help/bonus-terms-and-conditions ->
+ * /help/terms-and-conditions); (iii) that segment's directory with each of SIBLING_NAMES (/help/terms, ...), or, when (i)
+ * applies, the directory above its terms-named directories (/en/terms/bonus/ -> /en/terms-and-conditions). No guess
+ * keeps a promotion's or product's segment, and none ends in a bare `rules`. [] for a URL whose path names neither.
+ */
+export function promoSiblingGuesses(url) {
+  let u;
+  try { u = new URL(url); } catch { return []; }
+  const segs = u.pathname.split("/").filter(Boolean), i = segs.findLastIndex(namesPromo);
+  if (!/^https?:$/.test(u.protocol) || i < 0) return [];
+  const at = (parts, end = "") => `${u.origin}/${parts.join("/")}${end}`;
+  const slash = u.pathname.endsWith("/") ? "/" : "", plain = (s) => !namesPromo(s), dir = segs.slice(0, i).filter(plain), out = [];
+  const rest = segs.filter(plain);
+  const termsDir = rest.length > 0 && TERMS_PATH.test(rest.join("/"));
+  if (termsDir) out.push(at(rest, slash));
+  const stripped = segs[i].split(/[-_]+/).filter((w) => w && !promoWord(w)).join("-");
+  if (stripped && TERMS_PATH.test(stripped)) out.push(at([...dir, stripped], slash));
+  // Beside a terms directory, not inside it: when (i) found the terms directory (/en/terms/), the siblings go next to it
+  // (/en/terms-and-conditions), not under it (/en/terms/terms-and-conditions).
+  const base = [...dir];
+  while (termsDir && base.length && TERMS_PATH.test(base[base.length - 1])) base.pop();
+  for (const n of SIBLING_NAMES) out.push(at([...base, n]));
+  // A bare `rules` page (/sportsbook/rules -> /rules) is a game's or a product's rules as often as the terms.
+  return [...new Set(out)].filter((g) => !/(^|\/)rules\/?$/i.test(new URL(g).pathname));
+}
+
+/**
  * Is `href` a page on the casino's domain whose own name (the path's last segment) is the general terms, with no
  * segment naming a promotion, a product, a VIP club or another policy (/promotions/terms-and-conditions,
  * /sportsbook/terms-and-conditions, /vip/terms-conditions are not)?
@@ -146,6 +232,9 @@ export function namedTermsPage(href, pageUrl) {
 // A path segment that names a promotion, a product, a VIP club or another policy, read as whole words (split on - and
 // _, each matched from its start): /promotions and /my_bonus do, /preferences ("refer") and /permission ("mission") do not.
 const PROMO_WORD = new RegExp(`^(?:${PROMO.source})`, "i"), NOT_TERMS_WORD = new RegExp(`^(?:${NOT_TERMS.source})`, "i");
+// A word that names a promotion or a product, and a path segment holding one (/bonus-terms, /sportsbook, /my_bonus).
+const promoWord = (w) => PROMO_WORD.test(w) || PRODUCT.test(w);
+const namesPromo = (seg) => { const words = seg.split(/[-_.]+/).filter(Boolean); return PRODUCT.test(words.join(" ")) || words.some(promoWord); };
 function namesOther(seg) {
   const words = seg.split(/[-_.]+/).filter(Boolean);
   return NOT_TERMS_WORD.test(seg) || PRODUCT.test(words.join(" ")) || /casino-?games/i.test(seg) || words.some((w) => PROMO_WORD.test(w) || NOT_TERMS_WORD.test(w));
